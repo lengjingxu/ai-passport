@@ -201,7 +201,7 @@ static void do_poll(void) {
 }
 
 static size_t rec_cap(void) {
-    size_t room = esp_heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    size_t room = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
     if (room >= REC_MAX_BYTES + 64 * 1024) return REC_MAX_BYTES;
     if (room >= 4 * REC_BPS + 64 * 1024) return 4 * REC_BPS;
     if (room >= 2 * REC_BPS + 48 * 1024) return 2 * REC_BPS;
