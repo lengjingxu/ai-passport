@@ -1,0 +1,25 @@
+{
+  "tasks": [
+    {
+      "id": "t-101",
+      "title": "Prepare review notes",
+      "status": "running",
+      "message": "Generating section summaries (3/5)",
+      "updated_at": 1757418000
+    },
+    {
+      "id": "t-102",
+      "title": "Fix login timeout",
+      "status": "done",
+      "message": "PR merged, build green",
+      "updated_at": 1757415000
+    },
+    {
+      "id": "t-103",
+      "title": "Collect benchmark data",
+      "status": "queued",
+      "message": "Waiting for upstream dataset",
+      "updated_at": 1757412000
+    }
+  ]
+}

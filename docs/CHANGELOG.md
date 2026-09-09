@@ -6,6 +6,7 @@
 
 ## Unreleased
 
+- Added the Cindy task bridge demo: a Tasks menu page with Wi-Fi STA connection (credentials in a gitignored main/app_config.h), 3-second polling of a local bridge server for up to 8 tasks with status chips and latest-message previews, a task detail view, and hold-to-record 16 kHz mono PCM feedback submitted over HTTP; added the dependency-free bridge/server.py that serves tasks.json and archives recordings as WAV files, plus host tests for the task list model.
 - Added the supplied 80-byte CW2017 profile for the specified 520 mAh cell, including content/update-flag checks, verified writes, the required restart sequence, and bounded SOC-readiness polling.
 
 - Expanded the environment bootstrap document: added Espressif's Git service mirror (`git.espressif.com.cn`) as the preferred mainland-China route for ESP-IDF v5.5.3 and its submodules, documented submodule long-wait/timeout handling, in-place repair, and the pinned-commit shallow fetch for large submodules such as `esp32-wifi-lib`, warned about stale per-repository Jihulab `insteadOf` residue, and added the official offline release archive as a last-resort fallback (learned from `esp-mosaico/esp-mosaico-vibe`).

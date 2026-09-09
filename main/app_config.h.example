@@ -1,0 +1,9 @@
+// 复制本文件为 main/app_config.h 并填写真实值；main/app_config.h 已被 .gitignore 忽略。
+#pragma once
+
+// 2.4GHz Wi-Fi，设备与电脑须在同一局域网。
+#define APP_WIFI_SSID       "your-ssid"
+#define APP_WIFI_PASSWORD   "your-password"
+
+// 电脑上 bridge/server.py 的监听地址。
+#define APP_BRIDGE_URL      "http://192.168.1.100:8787"

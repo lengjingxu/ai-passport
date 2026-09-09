@@ -6,6 +6,7 @@
 
 ## Unreleased
 
+- 新增 Cindy 任务桥演示：Tasks 菜单页支持 Wi-Fi STA 连接（凭证放在 gitignore 的 main/app_config.h），每 3 秒轮询本地桥接服务获取最多 8 条任务的状态角标与最新消息预览，提供任务详情页，并可按键录制 16kHz 单声道 PCM 反馈经 HTTP 提交；新增零依赖的 bridge/server.py，负责提供 tasks.json 并把录音归档为 WAV 文件，同时为任务列表模型补充 host tests。
 - 加入厂家为优特利 520mAh 电芯生成的 80 字节 CW2017 profile，并实现内容与更新标志检查、写入后校验、规定的重启时序以及有上限的 SOC 就绪等待。
 
 - 扩充环境引导文档：新增乐鑫 Git 服务镜像（`git.espressif.com.cn`）作为中国大陆首选线路，覆盖 ESP-IDF v5.5.3 及其子模块；补充子模块长等待/超时处理、原地修复，以及 `esp32-wifi-lib` 等大仓的按钉死 commit 浅取；提示按仓库残留的 Jihulab `insteadOf` 旧配置；并把官方离线 release 压缩包加入兜底方案（经验来自 `esp-mosaico/esp-mosaico-vibe`）。

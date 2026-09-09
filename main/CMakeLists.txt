@@ -10,6 +10,10 @@ idf_component_register(
          "demo_wifi.c"
          "demo_ble.c"
          "demo_low_power.c"
+         "app_wifi.c"
+         "tasks_model.c"
+         "tasks_client.c"
+         "demo_tasks.c"
     INCLUDE_DIRS "."
-    REQUIRES bsp bt esp_event esp_hw_support esp_netif esp_timer esp_wifi nvs_flash
+    REQUIRES bsp bt esp_event esp_hw_support esp_http_client esp_netif esp_timer esp_wifi json nvs_flash
 )
