@@ -4,5 +4,8 @@
 #if __has_include("app_config.h")
 #include "app_config.h"
 #else
-#error "复制 main/app_config.h.example 为 main/app_config.h，填写 Wi-Fi 与 APP_BRIDGE_URL"
+#pragma message("main/app_config.h not found; building with placeholder Wi-Fi/bridge config")
+#define APP_WIFI_SSID       "your-ssid"
+#define APP_WIFI_PASSWORD   "your-password"
+#define APP_BRIDGE_URL      "http://192.168.1.100:8787"
 #endif
