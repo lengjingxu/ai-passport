@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Replaced whole-recording RAM allocation with bounded PCM streaming (30-second limit); reject incomplete uploads and report recording memory/transport failures. Update the local bridge together with the firmware.
+
 - Fixed Cindy Tasks station/DHCP ownership, connection diagnostics, page shutdown, recording stop/send, list scrolling and detail refresh; added station lifecycle regression tests.
 
 - Added the Cindy task bridge demo: a Tasks menu page with Wi-Fi STA connection (credentials in a gitignored main/app_config.h), 3-second polling of a local bridge server for up to 8 tasks with status chips and latest-message previews, a task detail view, and hold-to-record 16 kHz mono PCM feedback submitted over HTTP; added the dependency-free bridge/server.py that serves tasks.json and archives recordings as WAV files, plus host tests for the task list model.

@@ -52,7 +52,7 @@ queue events; the application task handles page lifecycle with LVGL locking.
 
 UP/DOWN selects a task in the scrollable list; OK opens details. Details update
 with polling; UP/DOWN switches tasks. OK starts recording and another OK stops
-and sends it. The memory-dependent recording limit also submits the recording;
+and sends it. The 30-second recording limit also submits the recording;
 holding OK exits and discards an unfinished recording. The battery appears at
 the top right, below the cloud. UI text remains English because the current
 font does not contain Chinese glyphs.
@@ -75,3 +75,24 @@ disconnect reasons, cleanup, failed initialization and reentry using ESP-IDF
 test doubles. Hardware acceptance still needs Wi-Fi association/DHCP, task
 rendering, recording upload and repeated Tasks/scan/menu navigation. Report
 Build, Host tests, Device tests and Unverified separately.
+
+## Streaming recording
+
+The [AI Passport Xiaozhi implementation](https://github.com/FoloToy/folo-ai-passport-xiaozhi/tree/d24fce080d86d7cc642f71585f6efde40fb99104/main/audio)
+uses frame-based capture, bounded queues and Opus transmission. Cindy borrows
+bounded streaming; the current LAN bridge accepts uncompressed PCM (32,000
+bytes/second). No Opus encoder is added in this change.
+
+Eight 512-byte PCM blocks decouple microphone reads from network writes. Queue
+metadata, the uploader stack and HTTP buffers consume additional memory. Queue
+exhaustion aborts the recording instead of silently dropping speech. Start/end
+logs include free heap, largest block, byte count and error code, without audio
+or credentials. On-device timing, capture continuity and repeated-recording
+heap stability remain hardware acceptance checks.
+
+POST /feedback requires chunked 16 kHz / 16-bit / mono PCM, chunks at most 512
+bytes, at most 30 seconds total. The bridge writes a temporary WAV and renames
+it only after a valid final chunk; HTTP 201 acknowledges the saved file.
+Cancellation or truncation removes the temporary file. A missing acknowledgement
+is a send failure; the device does not retry automatically. Update bridge and
+firmware together; fixed Content-Length uploads are no longer accepted.

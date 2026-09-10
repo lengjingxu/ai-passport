@@ -108,32 +108,48 @@ esp_err_t tasks_client_fetch(task_item_t *out, int max, int *count) {
     return ESP_OK;
 }
 
-esp_err_t tasks_client_post_feedback(const char *task_id, const void *pcm,
-                                     size_t bytes, uint32_t hz) {
-    char url[192];
-    snprintf(url, sizeof(url), "%s/feedback?task_id=%s&hz=%lu&bits=16&ch=1",
-             APP_BRIDGE_URL, task_id, (unsigned long)hz);
-
-    esp_http_client_config_t cfg = { .url = url, .timeout_ms = 10000 };
-    esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) return ESP_FAIL;
-    esp_http_client_set_method(client, HTTP_METHOD_POST);
-    esp_http_client_set_header(client, "Content-Type", "application/octet-stream");
-
-    esp_err_t err = esp_http_client_open(client, (int)bytes);
-    if (err == ESP_OK) {
-        if (esp_http_client_write(client, pcm, (int)bytes) != (int)bytes) err = ESP_FAIL;
+static esp_err_t write_all(esp_http_client_handle_t client, const void *data, size_t bytes) {
+    const char *p = data;
+    while (bytes) {
+        int n = esp_http_client_write(client, p, bytes);
+        if (n <= 0) return ESP_FAIL;
+        p += n;
+        bytes -= n;
     }
-    if (err == ESP_OK) {
-        err = esp_http_client_fetch_headers(client) >= 0 ? ESP_OK : ESP_FAIL;
-        int status = esp_http_client_get_status_code(client);
-        char drain[128] = { 0 };
-        esp_http_client_read(client, drain, sizeof(drain) - 1);
-        if (status < 200 || status >= 300) {
-            ESP_LOGE(TAG, "feedback 提交失败: HTTP %d %s", status, drain);
-            err = ESP_FAIL;
-        }
+    return ESP_OK;
+}
+
+esp_err_t tasks_feedback_open(const char *task_id, esp_http_client_handle_t *out) {
+    // Percent-encode the UTF-8 identifier before putting it into the query.
+    char id[TASK_ID_LEN * 3], *end = id;
+    for (const unsigned char *p = (const unsigned char *)task_id; *p; ++p) {
+        if (end + 3 >= id + sizeof(id)) return ESP_ERR_INVALID_ARG;
+        end += sprintf(end, "%%%02X", *p);
     }
-    esp_http_client_cleanup(client);
-    return err;
+    *end = 0;
+    char url[sizeof(id) + 192];
+    snprintf(url, sizeof(url), "%s/feedback?task_id=%s&hz=16000&bits=16&ch=1", APP_BRIDGE_URL, id);
+    esp_http_client_config_t cfg = { .url = url, .timeout_ms = 2000,
+                                    .buffer_size = 512, .buffer_size_tx = 512 };
+    *out = esp_http_client_init(&cfg);
+    if (!*out) return ESP_ERR_NO_MEM;
+    esp_http_client_set_method(*out, HTTP_METHOD_POST);
+    esp_http_client_set_header(*out, "Content-Type", "application/octet-stream");
+    return esp_http_client_open(*out, -1);
+}
+
+esp_err_t tasks_feedback_write(esp_http_client_handle_t client, const void *pcm, size_t bytes) {
+    if (!bytes || bytes > 512 || bytes % 2) return ESP_ERR_INVALID_ARG;
+    char frame[520];
+    int n = snprintf(frame, sizeof(frame), "%x\r\n", (unsigned)bytes);
+    memcpy(frame + n, pcm, bytes);
+    memcpy(frame + n + bytes, "\r\n", 2);
+    return write_all(client, frame, n + bytes + 2);
+}
+
+esp_err_t tasks_feedback_finish(esp_http_client_handle_t client) {
+    if (write_all(client, "0\r\n\r\n", 5) != ESP_OK ||
+        esp_http_client_fetch_headers(client) < 0) return ESP_FAIL;
+    // The bridge acknowledges only after the complete WAV has been saved.
+    return esp_http_client_get_status_code(client) == 201 ? ESP_OK : ESP_FAIL;
 }

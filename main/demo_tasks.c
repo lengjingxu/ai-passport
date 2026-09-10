@@ -2,7 +2,7 @@
 //
 // 按键(页面内)：UP/DOWN 移动选中或切换任务；OK 短按 进详情 / 开始录音 / 停止并发送；
 // OK 长按由 main.c 统一返回菜单，录音中返回即放弃本次录音。
-// 录音为 16kHz/16bit/mono PCM，按剩余最大连续堆自动限长(最长 6s)，直接 POST 给 bridge。
+// 16kHz/16bit/mono PCM streams through a bounded queue to the bridge (maximum 30s).
 // 屏幕字体不含中文字形，界面文案一律英文。
 #include "demo.h"
 #include "app_wifi.h"
@@ -19,6 +19,8 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "lvgl.h"
 
 #include <stdio.h>
@@ -27,7 +29,7 @@
 
 #define REC_HZ          16000
 #define REC_BPS         (REC_HZ * 2)                 // 16bit mono = 32KB/s
-#define REC_MAX_BYTES   (6 * REC_BPS)
+#define REC_MAX_BYTES   (30 * REC_BPS)
 #define POLL_PERIOD_MS  3000
 #define WORKER_TICK_MS  150
 
@@ -206,76 +208,113 @@ static void do_poll(void) {
     bsp_lvgl_unlock();
 }
 
-static size_t rec_cap(void) {
-    size_t room = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
-    if (room >= REC_MAX_BYTES + 64 * 1024) return REC_MAX_BYTES;
-    if (room >= 4 * REC_BPS + 64 * 1024) return 4 * REC_BPS;
-    if (room >= 2 * REC_BPS + 48 * 1024) return 2 * REC_BPS;
-    return 0;
+typedef struct {
+    size_t bytes;
+    int16_t pcm[256];
+} record_chunk_t;
+
+typedef struct {
+    QueueHandle_t queue;
+    SemaphoreHandle_t done;
+    esp_http_client_handle_t client;
+    atomic_bool abort;
+    atomic_int error;
+} record_upload_t;
+
+static void upload_recording(void *arg) {
+    record_upload_t *upload = arg;
+    record_chunk_t chunk;
+    while (!upload->abort && !s_exit) {
+        if (!xQueueReceive(upload->queue, &chunk, pdMS_TO_TICKS(50))) continue;
+        if (upload->abort || s_exit) break;
+        esp_err_t err = chunk.bytes ? tasks_feedback_write(upload->client, chunk.pcm, chunk.bytes)
+                                   : tasks_feedback_finish(upload->client);
+        if (err != ESP_OK) upload->error = err;
+        if (err != ESP_OK || !chunk.bytes) break;
+    }
+    esp_http_client_cleanup(upload->client);
+    // No access to caller-owned state after signalling completion.
+    xSemaphoreGive(upload->done);
+    vTaskDelete(NULL);
 }
 
 static void do_record(void) {
-    size_t cap = rec_cap();
     char task_id[TASK_ID_LEN] = "";
     if (!bsp_lvgl_lock(800)) { s_cmd = CMD_NONE; return; }
     const task_item_t *it = tasks_model_current(&s_model);
     if (it) strncpy(task_id, it->id, sizeof(task_id) - 1);
-    if (cap == 0 || task_id[0] == 0) {
-        snprintf(s_line, sizeof(s_line), cap == 0 ? "low memory for record" : "no task selected");
-        status_refresh();
-        bsp_lvgl_unlock();
-        s_cmd = CMD_NONE;
-        return;
-    }
+    if (!task_id[0]) { bsp_lvgl_unlock(); s_cmd = CMD_NONE; return; }
     record_show();
+    lv_label_set_text(s_rec_hint, "Connecting...");
     bsp_lvgl_unlock();
 
-    uint8_t *buf = malloc(cap);
-    if (!buf) { s_cmd = CMD_NONE; return; }
-    if (bsp_audio_set_format(REC_HZ, 16, 1) != ESP_OK) {
-        free(buf);
-        s_cmd = CMD_NONE;
-        if (bsp_lvgl_lock(500)) { snprintf(s_line, sizeof(s_line), "audio unavailable"); status_refresh(); bsp_lvgl_unlock(); }
-        return;
+    ESP_LOGI(TAG, "record start: free=%u largest=%u queue=8x512",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    record_upload_t upload = {0};
+    bool started = false;
+    size_t fill = 0;
+    esp_err_t err = ESP_ERR_NO_MEM;
+    upload.queue = xQueueCreate(8, sizeof(record_chunk_t));
+    upload.done = xSemaphoreCreateBinary();
+    if (!upload.queue || !upload.done) goto cleanup;
+    err = tasks_feedback_open(task_id, &upload.client);
+    if (err != ESP_OK) goto cleanup;
+    err = bsp_audio_set_format(REC_HZ, 16, 1);
+    if (err != ESP_OK) goto cleanup;
+    if (xTaskCreate(upload_recording, "record_upload", 4096, &upload, 4, NULL) != pdPASS) {
+        err = ESP_ERR_NO_MEM;
+        goto cleanup;
     }
-
+    started = true;
     s_recording = true;
-    int fill = 0;
-    int16_t chunk[256];                     // 512B = 16ms，短读让停止按键及时生效
-    int ui_skip = 0;
-    while (!s_exit && s_cmd == CMD_RECORD && fill < (int)cap) {
-        if (bsp_audio_read(chunk, sizeof(chunk)) != ESP_OK) break;
-        int peak = 0;
-        for (size_t i = 0; i < sizeof(chunk) / sizeof(chunk[0]); i++) {
-            int v = chunk[i] < 0 ? -chunk[i] : chunk[i];
-            if (v > peak) peak = v;
-        }
-        memcpy(buf + fill, chunk, sizeof(chunk));
-        fill += sizeof(chunk);
-        if (++ui_skip >= 3 && bsp_lvgl_lock(200)) {     // ~50ms 刷新一次，控制锁竞争
-            ui_skip = 0;
-            int level = peak * 100 / 32768;
-            lv_bar_set_value(s_rec_bar, level > 100 ? 100 : level, LV_ANIM_OFF);
-            lv_label_set_text_fmt(s_rec_sec, "%ds / %ds", fill / REC_BPS, (int)(cap / REC_BPS));
+    if (bsp_lvgl_lock(200)) { lv_label_set_text(s_rec_hint, "OK: stop and send"); bsp_lvgl_unlock(); }
+    record_chunk_t chunk = { .bytes = sizeof(chunk.pcm) };
+    while (!s_exit && s_cmd == CMD_RECORD && fill < REC_MAX_BYTES) {
+        if (upload.error != ESP_OK) { err = upload.error; break; }
+        chunk.bytes = REC_MAX_BYTES - fill < sizeof(chunk.pcm) ? REC_MAX_BYTES - fill : sizeof(chunk.pcm);
+        err = bsp_audio_read(chunk.pcm, chunk.bytes);
+        if (err != ESP_OK) break;
+        if (!xQueueSend(upload.queue, &chunk, 0)) { err = ESP_ERR_TIMEOUT; break; }
+        fill += chunk.bytes;
+        if (fill % 4096 == 0 && bsp_lvgl_lock(10)) {
+            int peak = 0;
+            for (size_t i = 0; i < chunk.bytes / 2; ++i) {
+                int v = chunk.pcm[i] < 0 ? -chunk.pcm[i] : chunk.pcm[i];
+                if (v > peak) peak = v;
+            }
+            lv_bar_set_value(s_rec_bar, peak * 100 / 32768, LV_ANIM_OFF);
+            lv_label_set_text_fmt(s_rec_sec, "%us / 30s", (unsigned)(fill / REC_BPS));
             bsp_lvgl_unlock();
         }
     }
-    bool submit = !s_exit && (s_cmd == CMD_STOP_SEND || fill == (int)cap) && fill > 0;
+    bool submit = err == ESP_OK && !s_exit && fill &&
+                  (s_cmd == CMD_STOP_SEND || fill == REC_MAX_BYTES);
+    if (submit) {
+        if (bsp_lvgl_lock(100)) { lv_label_set_text(s_rec_hint, "Sending..."); bsp_lvgl_unlock(); }
+        chunk.bytes = 0;
+        // Keep cancellation responsive while the sender drains its bounded queue.
+        while (!xQueueSend(upload.queue, &chunk, pdMS_TO_TICKS(20))) {
+            if (s_exit || upload.error != ESP_OK) { submit = false; break; }
+        }
+    }
+    upload.abort = !submit;
+    xSemaphoreTake(upload.done, portMAX_DELAY);
+    if (upload.error != ESP_OK) err = upload.error;
+cleanup:
+    if (!started && upload.client) esp_http_client_cleanup(upload.client);
+    if (upload.queue) vQueueDelete(upload.queue);
+    if (upload.done) vSemaphoreDelete(upload.done);
     s_cmd = CMD_NONE;
     s_recording = false;
-
-    if (submit) {
-        if (bsp_lvgl_lock(500)) { lv_label_set_text(s_rec_hint, "Sending..."); bsp_lvgl_unlock(); }
-        esp_err_t serr = tasks_client_post_feedback(task_id, buf, fill, REC_HZ);
-        if (bsp_lvgl_lock(500)) {
-            lv_label_set_text(s_rec_hint, serr == ESP_OK ? "Submitted" : "Send failed");
-            bsp_lvgl_unlock();
-        }
-        vTaskDelay(pdMS_TO_TICKS(900));
-    }
-    free(buf);
+    ESP_LOGI(TAG, "record end: bytes=%u result=%s free=%u largest=%u", (unsigned)fill,
+             esp_err_to_name(err), (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
     if (!s_exit && bsp_lvgl_lock(500)) {
+        snprintf(s_line, sizeof(s_line), err == ESP_OK ? (fill ? "Recording submitted" : "Recording cancelled")
+                                                     : "Record failed: %s", esp_err_to_name(err));
         detail_show();
+        status_refresh();
         bsp_lvgl_unlock();
     }
 }
