@@ -39,6 +39,13 @@ harness = r'''
 #define ESP_LOGE(...) ((void)0)
 #define ESP_LOGW(...) ((void)0)
 typedef int esp_err_t;
+typedef int wifi_ps_type_t;
+#define WIFI_PS_NONE 0
+static int wifi_ps = 1, fail_wifi, fail_open;
+static int esp_wifi_get_ps(int *mode) {*mode=wifi_ps;return 0;}
+static int esp_wifi_set_ps(int mode) {if (fail_wifi && mode==0) return ESP_FAIL;wifi_ps=mode;return 0;}
+static int64_t esp_timer_get_time(void) {static int64_t now;return now+=16000;}
+
 typedef void *esp_http_client_handle_t;
 typedef struct { unsigned char items[8][520]; size_t size; int count; } queue_t;
 typedef queue_t *QueueHandle_t;
@@ -102,7 +109,7 @@ static void xSemaphoreTake(void *s, int ticks);
 static void vTaskDelete(void *t) {(void)t;}
 static void vQueueDelete(queue_t *q) {free(q);allocations--;}
 static void vSemaphoreDelete(void *s) {(void)s;allocations--;}
-static int tasks_feedback_open(const char *id, void **out) {(void)id;*out=(void *)1;return 0;}
+static int tasks_feedback_open(const char *id, void **out) {(void)id;assert(wifi_ps == WIFI_PS_NONE);*out=(void *)1;return fail_open ? ESP_FAIL : 0;}
 static int tasks_feedback_write(void *client, const void *pcm, size_t bytes) {(void)client;(void)pcm;(void)bytes;return 0;}
 static int tasks_feedback_finish(void *client) {(void)client;return 0;}
 static void esp_http_client_cleanup(void *client) {(void)client;closed++;}
@@ -116,6 +123,7 @@ static void xSemaphoreTake(void *s, int ticks) {
 }
 static void reset(int chunks, int blocked, int cancelled) {
     s_exit=false;s_recording=false;s_cmd=CMD_RECORD;
+    assert(wifi_ps == 1); fail_wifi=fail_open=0;
     closed=submitted=waits=reads=0;sent=0;stop_after=chunks;stalled=blocked;cancel=cancelled;
 }
 int main(void) {
@@ -133,6 +141,10 @@ int main(void) {
     assert(submitted == 0 && !allocations && closed == 1);
     reset(2000, 0, 0); do_record();
     assert(submitted == 1 && sent == REC_MAX_BYTES && !allocations);
+    reset(12, 0, 0); fail_open=1; do_record();
+    assert(wifi_ps == 1 && !allocations && closed == 1 && !submitted);
+    reset(12, 0, 0); fail_wifi=1; do_record();
+    assert(wifi_ps == 1 && !allocations && closed == 0 && !submitted);
     puts("Recording queue: PASS (bursts, congestion, cancellation, limit, repeated cleanup)");
 }
 '''

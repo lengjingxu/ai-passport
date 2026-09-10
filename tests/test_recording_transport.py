@@ -6,8 +6,7 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
 source = (root / 'main/tasks_client.c').read_text()
-writer = source[source.index('static esp_err_t write_all'):source.index('esp_err_t tasks_feedback_open')]
-writer += source[source.index('esp_err_t tasks_feedback_write'):]
+writer = source[source.index('static esp_err_t write_all'):]
 harness = r'''
 #include <assert.h>
 #include <stdio.h>
@@ -18,6 +17,27 @@ typedef void *esp_http_client_handle_t;
 #define ESP_OK 0
 #define ESP_FAIL -1
 #define ESP_ERR_INVALID_ARG -2
+#define ESP_ERR_NO_MEM -3
+#define APP_BRIDGE_URL "http://bridge.invalid"
+#define TASK_ID_LEN 64
+#define HTTP_METHOD_POST 1
+#define IPPROTO_TCP 6
+#define TCP_NODELAY 1
+#define ESP_LOGE(...) ((void)0)
+typedef struct { const char *url; int timeout_ms, buffer_size, buffer_size_tx; } esp_http_client_config_t;
+static int open_error, socket_error, socket_fd=7, no_delay;
+static char last_url[512];
+static void *esp_http_client_init(const esp_http_client_config_t *cfg) {
+    snprintf(last_url, sizeof(last_url), "%s", cfg->url);return (void *)1;
+}
+static void esp_http_client_set_method(void *client, int method) {(void)client;assert(method==HTTP_METHOD_POST);}
+static void esp_http_client_set_header(void *client, const char *key, const char *value) {(void)client;(void)key;(void)value;}
+static int esp_http_client_open(void *client, int length) {(void)client;assert(length==-1);return open_error;}
+static int esp_http_client_get_socket(void *client) {(void)client;return socket_fd;}
+static int setsockopt(int fd, int level, int option, const void *value, size_t size) {
+    assert(fd==7 && level==IPPROTO_TCP && option==TCP_NODELAY && size==sizeof(int));
+    no_delay=*(const int *)value;return socket_error;
+}
 static char wire[2048];
 static int used, mode, status = 201, headers;
 static int esp_http_client_write(void *client, const char *data, int bytes) {
@@ -51,6 +71,15 @@ int main(void) {
     assert(tasks_feedback_write(NULL, pcm, 513) == ESP_ERR_INVALID_ARG);
     assert(tasks_feedback_write(NULL, pcm, 1) == ESP_ERR_INVALID_ARG);
     assert(tasks_feedback_write(NULL, pcm, 0) == ESP_ERR_INVALID_ARG);
+    void *client = NULL;
+    assert(tasks_feedback_open("test &", &client) == ESP_OK && no_delay == 1);
+    assert(strstr(last_url, "task_id=%74%65%73%74%20%26&hz=16000"));
+    socket_error=-1;
+    assert(tasks_feedback_open("test", &client) == ESP_FAIL);
+    socket_error=0;socket_fd=-1;
+    assert(tasks_feedback_open("test", &client) == ESP_FAIL);
+    socket_fd=7;open_error=ESP_FAIL;no_delay=0;
+    assert(tasks_feedback_open("test", &client) == ESP_FAIL && !no_delay);
     puts("Recording transport: PASS (short writes, framing, failures, acknowledgement)");
 }
 '''

@@ -16,6 +16,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_wifi.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -219,6 +220,8 @@ typedef struct {
     esp_http_client_handle_t client;
     atomic_bool abort;
     atomic_int error;
+    size_t sent_bytes;
+    uint32_t max_write_ms;
 } record_upload_t;
 
 static void upload_recording(void *arg) {
@@ -227,8 +230,12 @@ static void upload_recording(void *arg) {
     while (!upload->abort && !s_exit) {
         if (!xQueueReceive(upload->queue, &chunk, pdMS_TO_TICKS(50))) continue;
         if (upload->abort || s_exit) break;
+        int64_t started_us = esp_timer_get_time();
         esp_err_t err = chunk.bytes ? tasks_feedback_write(upload->client, chunk.pcm, chunk.bytes)
                                    : tasks_feedback_finish(upload->client);
+        uint32_t elapsed_ms = (esp_timer_get_time() - started_us) / 1000;
+        if (elapsed_ms > upload->max_write_ms) upload->max_write_ms = elapsed_ms;
+        if (err == ESP_OK) upload->sent_bytes += chunk.bytes;
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "record upload %s failed: %s", chunk.bytes ? "write" : "finish", esp_err_to_name(err));
             upload->error = err;
@@ -256,11 +263,18 @@ static void do_record(void) {
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
     record_upload_t upload = {0};
     bool started = false;
+    bool restore_wifi = false;
+    wifi_ps_type_t saved_ps = WIFI_PS_NONE;
     size_t fill = 0;
     esp_err_t err = ESP_ERR_NO_MEM;
     upload.queue = xQueueCreate(8, sizeof(record_chunk_t));
     upload.done = xSemaphoreCreateBinary();
     if (!upload.queue || !upload.done) goto cleanup;
+    err = esp_wifi_get_ps(&saved_ps);
+    if (err != ESP_OK) goto cleanup;
+    err = esp_wifi_set_ps(WIFI_PS_NONE);
+    if (err != ESP_OK) goto cleanup;
+    restore_wifi = true;
     err = tasks_feedback_open(task_id, &upload.client);
     if (err != ESP_OK) goto cleanup;
     err = bsp_audio_set_format(REC_HZ, 16, 1);
@@ -314,14 +328,25 @@ cleanup:
     if (!started && upload.client) esp_http_client_cleanup(upload.client);
     if (upload.queue) vQueueDelete(upload.queue);
     if (upload.done) vSemaphoreDelete(upload.done);
+    if (restore_wifi) {
+        esp_err_t restore_err = esp_wifi_set_ps(saved_ps);
+        if (restore_err != ESP_OK) {
+            ESP_LOGE(TAG, "record Wi-Fi restore failed: %s", esp_err_to_name(restore_err));
+            if (err == ESP_OK) err = restore_err;
+        }
+    }
     s_cmd = CMD_NONE;
     s_recording = false;
-    ESP_LOGI(TAG, "record end: bytes=%u result=%s free=%u largest=%u", (unsigned)fill,
-             esp_err_to_name(err), (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+    ESP_LOGI(TAG, "record end: captured=%u sent=%u max_write_ms=%u result=%s free=%u largest=%u",
+             (unsigned)fill, (unsigned)upload.sent_bytes, (unsigned)upload.max_write_ms, esp_err_to_name(err), (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
     if (!s_exit && bsp_lvgl_lock(500)) {
         snprintf(s_line, sizeof(s_line), err == ESP_OK ? (fill ? "Recording submitted" : "Recording cancelled")
                                                      : "Record failed: %s", esp_err_to_name(err));
+        if (err == ESP_ERR_TIMEOUT) {
+            snprintf(s_line, sizeof(s_line), "ESP_ERR_TIMEOUT\n%uB / %ums",
+                     (unsigned)upload.sent_bytes, (unsigned)upload.max_write_ms);
+        }
         detail_show();
         status_refresh();
         bsp_lvgl_unlock();

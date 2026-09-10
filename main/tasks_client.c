@@ -6,6 +6,8 @@
 #include "cJSON.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
+#include "lwip/sockets.h"
+#include "lwip/tcp.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -135,7 +137,14 @@ esp_err_t tasks_feedback_open(const char *task_id, esp_http_client_handle_t *out
     if (!*out) return ESP_ERR_NO_MEM;
     esp_http_client_set_method(*out, HTTP_METHOD_POST);
     esp_http_client_set_header(*out, "Content-Type", "application/octet-stream");
-    return esp_http_client_open(*out, -1);
+    esp_err_t err = esp_http_client_open(*out, -1);
+    if (err != ESP_OK) return err;
+    int fd = esp_http_client_get_socket(*out), enabled = 1;
+    if (fd < 0 || setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &enabled, sizeof(enabled)) != 0) {
+        ESP_LOGE(TAG, "record TCP_NODELAY failed");
+        return ESP_FAIL;
+    }
+    return ESP_OK;
 }
 
 esp_err_t tasks_feedback_write(esp_http_client_handle_t client, const void *pcm, size_t bytes) {

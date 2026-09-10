@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Use Wi-Fi performance mode only during recording and restore the previous mode on exit; disable TCP small-packet coalescing for PCM uploads and log transmitted bytes and maximum write time.
+
 - Fixed false recording queue timeouts during buffered microphone bursts by allowing a bounded 20 ms wait for the uploader; added controller regressions and explicit task-source/upload-interruption logs.
 
 - Replaced whole-recording RAM allocation with bounded PCM streaming (30-second limit); reject incomplete uploads and report recording memory/transport failures. Update the local bridge together with the firmware.

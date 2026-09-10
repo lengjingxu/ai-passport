@@ -105,3 +105,11 @@ congestion, cancellation, the duration limit and resource cleanup; it does not
 measure hardware scheduling or audio continuity. Bridge logs identify task data
 as `source=file`, and report discarded audio byte counts when an upload ends
 before its final chunk. These logs do not indicate a live Cindy subscription.
+
+Recording temporarily selects `WIFI_PS_NONE` and restores the previous mode on
+success, cancellation and failure. The upload socket uses `TCP_NODELAY` to avoid
+Nagle delays between PCM frames. A failure to configure either setting aborts
+recording. These settings reduce latency at the cost of higher radio activity
+during recording; board power consumption and real-network reliability require
+measurement. End logs include captured/sent byte counts and maximum HTTP write
+time. Queue waits remain bounded at 20 ms; no additional audio RAM is allocated.
