@@ -6,7 +6,9 @@
 
 ## Unreleased
 
-- Add an opt-in Cindy BLE task mode with authenticated passkey pairing, atomic bounded snapshots, waiting-state color, stale-state clearing and task-ID button actions. Requires the matching macOS Cindy adapter; BLE recording is not included.
+- Render task text with a Flash-resident Noto CJK font and preserve UTF-8 truncation boundaries. Add bounded Opus recording over authenticated BLE indications for the matching Cindy transcription adapter. Completed-task retention is provided by the desktop adapter.
+
+- Add an opt-in Cindy BLE task mode with authenticated passkey pairing, atomic bounded snapshots, waiting-state color, stale-state clearing and task-ID button actions. Requires the matching macOS Cindy adapter.
 
 - Rework Cindy task cards and details to separate titles, status and bounded scrolling messages; keep navigation and bridge-file provenance visible, and show the target task while recording. Preserve the pixel theme and existing button controls.
 

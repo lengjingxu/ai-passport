@@ -10,3 +10,6 @@ void passport_ble_status(char *out, size_t cap);
 esp_err_t passport_ble_open_task(const char *id);
 
 bool passport_ble_connected(void);
+
+// Recording sender only; waits for the central indication acknowledgement.
+esp_err_t passport_ble_voice_send(const void *data, size_t size);

@@ -9,6 +9,7 @@
 #include "host/ble_gap.h"
 #include "host/ble_gatt.h"
 #include "host/ble_sm.h"
+#include "host/ble_att.h"
 #include "host/util/util.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
@@ -20,10 +21,14 @@
 
 // Cindy-owned service; distinct from Nordic UART and reference firmware.
 #define UUID(last) BLE_UUID128_INIT(last,0x83,0x93,0xa4,0x21,0x46,0x86,0xa1,0x9d,0x49,0xc4,0x51,0x01,0x00,0xdc,0xc1)
-static const ble_uuid128_t service_uuid = UUID(0x01), rx_uuid = UUID(0x02), tx_uuid = UUID(0x03);
-static uint16_t tx_handle;
+static const ble_uuid128_t service_uuid = UUID(0x01), rx_uuid = UUID(0x02), tx_uuid = UUID(0x03), voice_uuid = UUID(0x04);
+static uint16_t tx_handle, voice_handle;
+static atomic_bool voice_subscribed;
+static atomic_int voice_ack_status;
+static SemaphoreHandle_t voice_ack;
 static uint8_t addr_type;
 static atomic_int connection = BLE_HS_CONN_HANDLE_NONE;
+static atomic_uint connection_generation;
 static atomic_bool wanted, secure, subscribed;
 static atomic_int passkey = -1, failure;
 static bool initialized;
@@ -41,6 +46,7 @@ static int access_cb(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *
 {
     (void)conn; (void)attr;
     if (!secure) return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
+    if (arg == (void *)2) return BLE_ATT_ERR_READ_NOT_PERMITTED;
     if (arg) {
         char id[TASK_ID_LEN];
         taskENTER_CRITICAL(&action_lock);
@@ -66,6 +72,9 @@ static const struct ble_gatt_svc_def services[] = {{
         .uuid = &tx_uuid.u, .access_cb = access_cb, .arg = (void *)1,
         .val_handle = &tx_handle,
         .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_READ_AUTHEN | BLE_GATT_CHR_F_NOTIFY,
+    }, {
+        .uuid = &voice_uuid.u, .access_cb = access_cb, .arg = (void *)2,
+        .val_handle = &voice_handle, .flags = BLE_GATT_CHR_F_INDICATE,
     }, {0}},
 }, {0}};
 
@@ -78,14 +87,22 @@ static int gap_event(struct ble_gap_event *e, void *arg)
         else if (wanted) failure = advertise();
         break;
     case BLE_GAP_EVENT_DISCONNECT:
-        secure = false; subscribed = false; passkey = -1;
+        connection_generation++;
+        secure = false; subscribed = false; voice_subscribed = false; passkey = -1;
         connection = BLE_HS_CONN_HANDLE_NONE;
         decoder.used = 0;
         incoming.count = 0;
         xQueueOverwrite(snapshots, &incoming);
         if (wanted) failure = advertise();
         break;
+    case BLE_GAP_EVENT_NOTIFY_TX:
+        if (e->notify_tx.attr_handle == voice_handle && e->notify_tx.indication && e->notify_tx.status != 0) {
+            voice_ack_status = e->notify_tx.status;
+            if (voice_ack) xSemaphoreGive(voice_ack);
+        }
+        break;
     case BLE_GAP_EVENT_SUBSCRIBE:
+        if (e->subscribe.attr_handle == voice_handle) voice_subscribed = e->subscribe.cur_indicate;
         if (e->subscribe.attr_handle == tx_handle) subscribed = e->subscribe.cur_notify;
         break;
     case BLE_GAP_EVENT_ENC_CHANGE: {
@@ -134,7 +151,8 @@ static void sync_host(void)
 }
 static void reset_host(int reason)
 {
-    secure = false; subscribed = false; passkey = -1; failure = reason;
+    connection_generation++;
+    secure = false; subscribed = false; voice_subscribed = false; passkey = -1; failure = reason;
     connection = BLE_HS_CONN_HANDLE_NONE; decoder.used = 0;
     incoming.count = 0;
     if (snapshots) xQueueOverwrite(snapshots, &incoming);
@@ -153,7 +171,8 @@ esp_err_t passport_ble_start(void)
     if (err != ESP_OK) return err;
     snapshots = xQueueCreate(1, sizeof(snapshot_t));
     stopped = xSemaphoreCreateBinary();
-    if (!snapshots || !stopped) { err = ESP_ERR_NO_MEM; goto fail; }
+    voice_ack = xSemaphoreCreateBinary();
+    if (!snapshots || !stopped || !voice_ack) { err = ESP_ERR_NO_MEM; goto fail; }
     err = nimble_port_init();
     if (err != ESP_OK) goto fail;
     initialized = true;
@@ -166,13 +185,15 @@ esp_err_t passport_ble_start(void)
     ble_hs_cfg.sm_bonding = 1; ble_hs_cfg.sm_mitm = 1; ble_hs_cfg.sm_sc = 1;
     ble_hs_cfg.sm_our_key_dist = ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_store_config_init();
-    decoder.used = 0; secure = false; subscribed = false; passkey = -1; failure = 0;
+    decoder.used = 0; secure = false; subscribed = false; voice_subscribed = false; passkey = -1; failure = 0;
     connection = BLE_HS_CONN_HANDLE_NONE; wanted = true;
     nimble_port_freertos_init(host_task);
     return ESP_OK;
 fail:
     if (snapshots) vQueueDelete(snapshots);
     if (stopped) vSemaphoreDelete(stopped);
+    if (voice_ack) vSemaphoreDelete(voice_ack);
+    voice_ack = NULL;
     snapshots = NULL; stopped = NULL;
     return err;
 }
@@ -188,6 +209,7 @@ esp_err_t passport_ble_stop(void)
     if (err != ESP_OK) return err;
     initialized = false; secure = false;
     vSemaphoreDelete(stopped); stopped = NULL;
+    vSemaphoreDelete(voice_ack); voice_ack = NULL;
     vQueueDelete(snapshots); snapshots = NULL;
     return ESP_OK;
 }
@@ -221,3 +243,23 @@ esp_err_t passport_ble_open_task(const char *id)
 }
 
 bool passport_ble_connected(void) { return secure; }
+
+// Only the recording sender calls this blocking function. The NimBLE task
+// signals acknowledged indications; disconnect/timeout aborts the recording.
+esp_err_t passport_ble_voice_send(const void *data, size_t size)
+{
+    int conn = connection;
+    unsigned generation = connection_generation;
+    if (!secure || !voice_subscribed || !voice_ack) return ESP_ERR_INVALID_STATE;
+    if (!size || size > 200 || size + 3 > ble_att_mtu(conn)) return ESP_ERR_INVALID_SIZE;
+    xSemaphoreTake(voice_ack, 0);
+    voice_ack_status = 0;
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(data, size);
+    if (!om) return ESP_ERR_NO_MEM;
+    if (ble_gatts_indicate_custom(conn, voice_handle, om)) return ESP_FAIL;
+    if (!xSemaphoreTake(voice_ack, pdMS_TO_TICKS(1500))) {
+        ble_gap_terminate(conn, BLE_ERR_REM_USER_CONN_TERM);
+        return ESP_ERR_TIMEOUT;
+    }
+    return secure && connection == conn && generation == connection_generation && voice_ack_status == BLE_HS_EDONE ? ESP_OK : ESP_FAIL;
+}

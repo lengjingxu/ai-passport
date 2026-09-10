@@ -55,6 +55,12 @@ static void *upload_arg;
 static int allocations, closed, submitted, waits, reads, stop_after, stalled, cancel;
 static size_t sent;
 static atomic_bool s_exit, s_recording;
+static bool s_ble_mode;
+typedef void passport_voice_t;
+static int passport_voice_open(const char *id, passport_voice_t **out) {(void)id;*out=(void *)1;return 0;}
+static int passport_voice_write(passport_voice_t *v, const int16_t *pcm, size_t n) {(void)v;(void)pcm;(void)n;return 0;}
+static int passport_voice_finish(passport_voice_t *v) {(void)v;return 0;}
+static void passport_voice_close(passport_voice_t *v, bool cancel) {(void)v;(void)cancel;closed++;}
 enum { CMD_NONE, CMD_RECORD, CMD_STOP_SEND };
 static int s_cmd, s_model, s_rec_hint, s_rec_bar, s_rec_sec;
 static char s_line[96];
@@ -119,7 +125,8 @@ static void xSemaphoreTake(void *s, int ticks) {
     (void)s; (void)ticks;
     record_upload_t *upload = upload_arg;
     if (!upload->abort && !s_exit) while (queue->count) drain_one(queue);
-    esp_http_client_cleanup(upload->client);
+    if (upload->voice) passport_voice_close(upload->voice, upload->abort);
+    else esp_http_client_cleanup(upload->client);
 }
 static void reset(int chunks, int blocked, int cancelled) {
     s_exit=false;s_recording=false;s_cmd=CMD_RECORD;
@@ -145,6 +152,13 @@ int main(void) {
     assert(wifi_ps == 1 && !allocations && closed == 1 && !submitted);
     reset(12, 0, 0); fail_wifi=1; do_record();
     assert(wifi_ps == 1 && !allocations && closed == 0 && !submitted);
+    s_ble_mode=true;
+    reset(12, 0, 0); do_record();
+    assert(submitted == 1 && sent == 12 * 512 && !allocations && closed == 1);
+    reset(12, 1, 0); do_record();
+    assert(submitted == 0 && strstr(s_line, "ESP_ERR_TIMEOUT") && !allocations && closed == 1);
+    reset(12, 0, 1); do_record();
+    assert(submitted == 0 && !allocations && closed == 1);
     puts("Recording queue: PASS (bursts, congestion, cancellation, limit, repeated cleanup)");
 }
 '''

@@ -45,6 +45,6 @@ const task_item_t *tasks_model_current(const tasks_model_t *m);
 
 task_chip_t tasks_model_chip(const char *status);
 
-// 取 message 的第一行；超出 cap-1 字节时硬截断（省略号交给 LVGL LONG_DOT 渲染）。
+// 取 message 的第一行；超出 cap-1 字节时按 UTF-8 字符边界截断（省略号交给 LVGL LONG_DOT 渲染）。
 // 返回写入字节数。
 int tasks_model_preview(const char *message, char *out, size_t cap);
