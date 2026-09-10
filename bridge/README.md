@@ -12,7 +12,7 @@ A zero-dependency local HTTP service that connects the AI Passport device to tas
 | --- | --- | --- |
 | GET | `/tasks` | Returns `{"tasks": [...]}` read fresh from `bridge/tasks.json` on every request, so any writer can update it between polls. |
 | GET | `/health` | Liveness check. |
-| POST | `/feedback?task_id=<id>&hz=16000&bits=16&ch=1` | Body is raw little-endian PCM. The server wraps it into a WAV file under `bridge/feedback/<task_id>/` and appends a line to `bridge/feedback/log.jsonl`. |
+| POST | `/feedback?task_id=<id>&hz=16000&bits=16&ch=1` | Body is chunked little-endian PCM (16 kHz / 16-bit / mono, maximum 512 bytes per chunk and 30 seconds total). HTTP 201 confirms a complete recording; incomplete uploads are discarded. Update the bridge together with the firmware. The server wraps it into a WAV file under `bridge/feedback/<task_id>/` and appends a line to `bridge/feedback/log.jsonl`. |
 
 Task fields consumed by the device: `id` (required, unique), `title`, `status` (`queued` / `running` / `in_progress` / `done` / `completed` / `failed` / `error`), `message`, `updated_at` (epoch seconds). At most 8 tasks are shown.
 

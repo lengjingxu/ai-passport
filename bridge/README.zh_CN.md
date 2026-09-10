@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | GET | `/tasks` | 每次请求都重新读取 `bridge/tasks.json` 并返回 `{"tasks": [...]}`，任何进程都可以在两次轮询之间改写它。 |
 | GET | `/health` | 存活检查。 |
-| POST | `/feedback?task_id=<id>&hz=16000&bits=16&ch=1` | 请求体为原始小端 PCM。服务端包装成 WAV 存到 `bridge/feedback/<task_id>/`，并在 `bridge/feedback/log.jsonl` 追加一行记录。 |
+| POST | `/feedback?task_id=<id>&hz=16000&bits=16&ch=1` | 请求体为 chunked 小端 PCM（16 kHz / 16 位 / 单声道，每块最多 512 字节，总长最多 30 秒）。完整录音返回 HTTP 201，未完成上传会丢弃。桥接服务须与固件一起更新。服务端包装成 WAV 存到 `bridge/feedback/<task_id>/`，并在 `bridge/feedback/log.jsonl` 追加一行记录。 |
 
 设备消费的任务字段：`id`（必填且唯一）、`title`、`status`（`queued` / `running` / `in_progress` / `done` / `completed` / `failed` / `error`）、`message`、`updated_at`（epoch 秒）。设备最多展示 8 条。
 
