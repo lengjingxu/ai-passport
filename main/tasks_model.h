@@ -17,6 +17,7 @@ typedef enum {
     TASK_CHIP_RUNNING,
     TASK_CHIP_DONE,
     TASK_CHIP_FAILED,
+    TASK_CHIP_WAITING,
     TASK_CHIP_UNKNOWN,
 } task_chip_t;
 

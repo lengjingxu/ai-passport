@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Add an opt-in Cindy BLE task mode with authenticated passkey pairing, atomic bounded snapshots, waiting-state color, stale-state clearing and task-ID button actions. Requires the matching macOS Cindy adapter; BLE recording is not included.
+
 - Rework Cindy task cards and details to separate titles, status and bounded scrolling messages; keep navigation and bridge-file provenance visible, and show the target task while recording. Preserve the pixel theme and existing button controls.
 
 - Use Wi-Fi performance mode only during recording and restore the previous mode on exit; disable TCP small-packet coalescing for PCM uploads and log transmitted bytes and maximum write time.

@@ -7,6 +7,7 @@
 #include "demo.h"
 #include "app_wifi.h"
 #include "tasks_client.h"
+#include "passport_ble.h"
 #include "tasks_model.h"
 #include "ui_pixel.h"
 
@@ -35,7 +36,7 @@
 #define WORKER_TICK_MS  150
 
 typedef enum { VIEW_LIST = 0, VIEW_DETAIL, VIEW_RECORD } view_t;
-typedef enum { CMD_NONE = 0, CMD_RECORD, CMD_STOP_SEND } cmd_t;
+typedef enum { CMD_NONE = 0, CMD_RECORD, CMD_STOP_SEND, CMD_OPEN } cmd_t;
 
 static const char *TAG = "demo_tasks";
 
@@ -46,6 +47,8 @@ static atomic_bool s_recording;
 
 static tasks_model_t s_model;
 static view_t s_view;
+static bool s_ble_mode;
+static char s_open_id[TASK_ID_LEN];
 static char s_line[96];                 // 屏幕右上角状态行（IP / 错误）
 
 static lv_obj_t *s_scr;
@@ -61,6 +64,7 @@ static const uint32_t CHIP_COLORS[] = {
     [TASK_CHIP_RUNNING] = UI_SKY_DARK,
     [TASK_CHIP_DONE]    = UI_GRASS,
     [TASK_CHIP_FAILED]  = UI_RED,
+    [TASK_CHIP_WAITING] = UI_ORANGE,
     [TASK_CHIP_UNKNOWN] = 0x78909C,
 };
 
@@ -84,7 +88,7 @@ static void view_show(view_t v) {
                      : v == VIEW_DETAIL ? s_box_detail : s_box_record;
     lv_obj_remove_flag(target, LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text(s_nav_label, v == VIEW_LIST ? "U/D: select   OK: open"
-                     : v == VIEW_DETAIL ? "U/D: task   OK: record" : "Hold OK: cancel & exit");
+                     : v == VIEW_DETAIL ? (s_ble_mode ? "U/D: task   OK: open" : "U/D: task   OK: record") : "Hold OK: cancel & exit");
 }
 
 static void list_highlight(void) {
@@ -101,7 +105,7 @@ static void list_rebuild(void) {
     for (int i = 0; i < TASKS_MODEL_MAX; i++) s_cards[i] = NULL;
 
     if (s_model.count == 0) {
-        lv_obj_t *empty = ui_pixel_label(s_box_list, "No tasks yet\nWaiting for bridge",
+        lv_obj_t *empty = ui_pixel_label(s_box_list, s_ble_mode ? "No tasks yet\nWaiting for Cindy" : "No tasks yet\nWaiting for bridge",
                                          &lv_font_montserrat_14, 0x5A6B7A);
         lv_obj_set_style_text_align(empty, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_align(empty, LV_ALIGN_TOP_MID, 0, 110);
@@ -359,11 +363,42 @@ cleanup:
 static void worker_task(void *arg) {
     (void)arg;
     int64_t last_poll = 0;
-    esp_err_t werr = app_wifi_start();
-    if (werr != ESP_OK) ESP_LOGE(TAG, "wifi start: %s", esp_err_to_name(werr));
+    int64_t last_ble_snapshot = 0;
+    esp_err_t werr = s_ble_mode ? passport_ble_start() : app_wifi_start();
+    if (werr != ESP_OK) ESP_LOGE(TAG, "radio start: %s", esp_err_to_name(werr));
 
     while (!s_exit) {
-        if (s_cmd == CMD_RECORD) {
+        if (s_ble_mode) {
+            task_item_t items[TASKS_MODEL_MAX];
+            int count;
+            bool changed = passport_ble_snapshot(items, &count);
+            int64_t now = esp_timer_get_time() / 1000;
+            if (changed) last_ble_snapshot = now;
+            bool stale = passport_ble_connected() && now - last_ble_snapshot > 10000;
+            if (stale) { count = 0; changed = true; }
+            char open_id[TASK_ID_LEN] = "";
+            int battery = bsp_battery_soc();
+            if (bsp_lvgl_lock(200)) {
+                passport_ble_status(s_line, sizeof(s_line));
+                if (stale) snprintf(s_line, sizeof(s_line), "Cindy sync paused");
+                if (werr != ESP_OK) snprintf(s_line, sizeof(s_line), "BLE start: %s", esp_err_to_name(werr));
+                if (changed && tasks_model_set_items(&s_model, items, count)) {
+                    list_rebuild();
+                    if (s_view == VIEW_DETAIL) detail_show();
+                }
+                if (s_cmd == CMD_OPEN) {
+                    memcpy(open_id, s_open_id, sizeof(open_id));
+                    s_cmd = CMD_NONE;
+                }
+                if (battery >= 0) lv_label_set_text_fmt(s_battery_label, "%d%%", battery);
+                status_refresh();
+                bsp_lvgl_unlock();
+            }
+            if (open_id[0]) {
+                esp_err_t err = passport_ble_open_task(open_id);
+                if (err != ESP_OK) ESP_LOGW(TAG, "BLE open failed: %s", esp_err_to_name(err));
+            }
+        } else if (s_cmd == CMD_RECORD) {
             do_record();
             last_poll = esp_timer_get_time() / 1000;
         } else if (!s_recording) {
@@ -387,18 +422,21 @@ static void worker_task(void *arg) {
         }
         vTaskDelay(pdMS_TO_TICKS(WORKER_TICK_MS));
     }
-    app_wifi_stop();
+    if (s_ble_mode) {
+        if (passport_ble_stop() != ESP_OK) ESP_LOGE(TAG, "BLE stop failed");
+    } else app_wifi_stop();
     s_worker_running = false;
     vTaskDelete(NULL);
 }
 
-void demo_tasks_enter(void) {
+static void tasks_enter(bool ble) {
+    s_ble_mode = ble;
     tasks_model_init(&s_model);
     s_exit = false;
     s_cmd = CMD_NONE;
     s_recording = false;
     s_view = VIEW_LIST;
-    snprintf(s_line, sizeof(s_line), "Wi-Fi...");
+    snprintf(s_line, sizeof(s_line), "%s", s_ble_mode ? "Starting Bluetooth..." : "Wi-Fi...");
 
     s_scr = ui_pixel_screen_create("CINDY");
     s_line_label = ui_pixel_label(s_scr, s_line, &lv_font_montserrat_14, UI_INK);
@@ -409,7 +447,7 @@ void demo_tasks_enter(void) {
     s_battery_label = ui_pixel_label(s_scr, "--%", &lv_font_montserrat_14, UI_INK);
     lv_obj_align(s_battery_label, LV_ALIGN_TOP_RIGHT, -8, 25);
 
-    lv_obj_t *source = ui_pixel_label(s_scr, "Source: bridge file", &lv_font_montserrat_14, UI_INK);
+    lv_obj_t *source = ui_pixel_label(s_scr, s_ble_mode ? "Source: Cindy / BLE" : "Source: bridge file", &lv_font_montserrat_14, UI_INK);
     lv_obj_align(source, LV_ALIGN_TOP_LEFT, 8, 282);
     s_nav_label = ui_pixel_label(s_scr, "U/D: select   OK: open", &lv_font_montserrat_14, UI_INK);
     lv_obj_align(s_nav_label, LV_ALIGN_TOP_LEFT, 8, 299);
@@ -471,10 +509,16 @@ void demo_tasks_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
             if (s_view == VIEW_LIST && s_model.count > 0) {
                 detail_show();
             } else if (s_view == VIEW_DETAIL) {
-                s_cmd = CMD_RECORD;
+                if (s_ble_mode) {
+                    const task_item_t *it = tasks_model_current(&s_model);
+                    if (it) { memcpy(s_open_id, it->id, sizeof(s_open_id)); s_cmd = CMD_OPEN; }
+                } else s_cmd = CMD_RECORD;
             } else if (s_view == VIEW_RECORD && s_cmd == CMD_RECORD) {
                 s_cmd = CMD_STOP_SEND;
             }
         }
     }
 }
+
+void demo_tasks_enter(void) { tasks_enter(false); }
+void demo_tasks_ble_enter(void) { tasks_enter(true); }

@@ -32,6 +32,10 @@ run_static_checks() {
         tests/test_tasks_model.c main/tasks_model.c \
         -o "${test_dir}/test_tasks_model"
     "${test_dir}/test_tasks_model"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_passport_protocol.c main/passport_protocol.c main/tasks_model.c \
+        -o "${test_dir}/test_passport_protocol"
+    "${test_dir}/test_passport_protocol"
     python3 tests/test_verify_firmware.py
     python3 tests/test_app_wifi.py
     python3 tests/test_bridge_recording.py

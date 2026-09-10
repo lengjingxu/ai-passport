@@ -13,6 +13,8 @@ idf_component_register(
          "app_wifi.c"
          "tasks_model.c"
          "tasks_client.c"
+         "passport_protocol.c"
+         "passport_ble.c"
          "demo_tasks.c"
     INCLUDE_DIRS "."
     REQUIRES bsp bt esp_event esp_hw_support esp_http_client esp_netif esp_timer esp_wifi json nvs_flash

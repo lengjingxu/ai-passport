@@ -26,7 +26,7 @@ static const demo_entry_t DEMOS[] = {
     { "Audio",   demo_audio_enter,   demo_audio_exit,   demo_audio_key   },
     { "Battery", demo_battery_enter, demo_battery_exit, demo_battery_key },
     { "Wi-Fi",   demo_wifi_enter,    demo_wifi_exit,    demo_wifi_key    },
-    { "BLE",     demo_ble_enter,     demo_ble_exit,     demo_ble_key     },
+    { "Cindy BLE", demo_tasks_ble_enter, demo_tasks_exit, demo_tasks_key },
     { "Low Power", demo_low_power_enter, demo_low_power_exit, demo_low_power_key },
     { "Tasks",   demo_tasks_enter,   demo_tasks_exit,   demo_tasks_key   },
 };

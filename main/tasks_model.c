@@ -61,6 +61,7 @@ const task_item_t *tasks_model_current(const tasks_model_t *m) {
 
 task_chip_t tasks_model_chip(const char *status) {
     if (!status) return TASK_CHIP_UNKNOWN;
+    if (strcmp(status, "waiting") == 0) return TASK_CHIP_WAITING;
     if (strcmp(status, "queued") == 0) return TASK_CHIP_QUEUED;
     if (strcmp(status, "running") == 0 || strcmp(status, "in_progress") == 0) return TASK_CHIP_RUNNING;
     if (strcmp(status, "done") == 0 || strcmp(status, "completed") == 0) return TASK_CHIP_DONE;

@@ -113,3 +113,59 @@ recording. These settings reduce latency at the cost of higher radio activity
 during recording; board power consumption and real-network reliability require
 measurement. End logs include captured/sent byte counts and maximum HTTP write
 time. Queue waits remain bounded at 20 ms; no additional audio RAM is allocated.
+
+## Bluetooth task mode (v1)
+
+Choose **Cindy BLE** in the device menu. This mode starts only NimBLE; it never
+falls back to Wi-Fi or the file bridge. UP/DOWN selects a task, OK opens its
+local detail, and a second OK asks Cindy to open that exact task ID. Holding OK
+returns to the menu and stops Bluetooth. Bluetooth recording and approval
+buttons are not implemented in v1; the separate Tasks page retains Wi-Fi audio.
+
+The matching Cindy Desktop adapter lives under `src/main/passport/`, with its
+macOS CoreBluetooth helper under `native/passport/`. Both firmware and Desktop
+must be updated. Existing released Cindy builds cannot consume this service.
+The development opt-in is `CINDY_PASSPORT_BLE=1` when launching Cindy through its
+normal development wrapper. The default is off; removing the environment
+variable disables the adapter. The helper adds a **Cindy BLE** menu-bar item:
+select the discovered Passport, then enter the device's six-digit passkey in
+the macOS pairing dialog. Bond keys persist in NimBLE NVS and macOS; no key is
+logged. The selected peripheral identifier is scoped to the Cindy profile.
+The menu can disconnect and disable auto-reconnect without erasing bond keys.
+
+Cindy's input-device activity feed provides state. The existing active task
+catalog provides titles and excludes archived tasks and worker sessions.
+At most eight tasks are ordered by waiting, error, running, then completed,
+with newest activity first within each state. This is an activity projection,
+not a copy of every sidebar row or its user-selected sort order. The desktop
+validates device-supplied task IDs against both current activity and the current
+catalog before opening. It never accepts an arbitrary command or approval.
+SSH-backed tasks use the same host activity feed; this adapter connects to the
+physical Mac's task catalog, not a remote desktop's mirrored sidebar.
+
+Service UUID: `C1DC0001-51C4-499D-A186-4621A4938301`. RX ends in `8302`, TX in
+`8303`. RX requires authenticated encrypted writes. TX provides an authenticated
+40-byte NUL-terminated task ID read; a one-byte notification tells the central
+to read it. The initial read establishes authentication and is never interpreted
+as an old button action. Notifications do not carry task content.
+
+A snapshot starts with a little-endian uint16 payload length, version byte `1`,
+and task count byte. Each task has four NUL-terminated, zero-padded UTF-8 fields
+of 40/80/16/192 bytes (ID/title/status/message); status values are `queued`,
+`running`, `waiting`, `done`, `failed`. IDs must fit without truncation; display
+text is truncated at UTF-8 boundaries. Maximum frame size is 2,628 bytes.
+ATT writes may split a frame anywhere but must not combine frame boundaries.
+Invalid versions, lengths, counts, duplicate IDs and unterminated fields fail
+closed. A snapshot is published only when the full frame validates.
+
+The central writes one ATT chunk with response at a time, retains only the
+latest unsent snapshot and refreshes a heartbeat every five seconds. A pending
+write exceeding ten seconds disconnects the link; reconnect attempts wait three
+seconds. Disconnect discards partial frames and clears device tasks. Ten seconds
+without a snapshot also clears tasks and displays `Cindy sync paused`. BLE
+callbacks do not access LVGL; the existing page worker consumes complete frames.
+
+Host checks cover fragmentation, invalid frames, UTF-8 boundaries, state mapping,
+bounded pending updates and rejected stale task IDs. Physical pairing,
+auto-reconnect, task freshness, repeated page entry/exit, Mac permission prompts
+and RAM use still require board validation. Current screen fonts lack CJK glyphs.
