@@ -26,6 +26,19 @@ Service `C1DC0001-51C4-499D-A186-4621A4938301` uses authenticated pairing with S
 
 Voice characteristic `8304` v1 indicates `kind:u8, token:u32LE, sequence:u16LE, payload`. Start kind 1 has a 40-byte task ID and sequence 0. Kind 2 has exactly 120 bytes of 60 ms Opus and a contiguous sequence starting at 0. Finish kind 3 and cancel kind 4 have no payload and use the next sequence. Up to 502 audio frames allow 30 seconds plus a padded partial frame and encoder flush. The Mac rejects an incomplete sequence or a recording longer than 45 seconds elapsed. Ogg keeps the encoder delay and silent flush instead of guessing a preskip value. Old clients without `8304` cannot record; update both sides.
 
+## Re-pairing
+
+A stored bond that is not authenticated, or a Mac that still holds stale keys for
+"Cindy Passport", makes every reconnect short-lived: the link encrypts with the
+old key and the firmware drops it. The firmware now deletes that peer entry and
+terminates the link once, so the next attempt starts a fresh passkey pairing. If
+macOS keeps reusing the old key, forget "Cindy Passport" in System Settings ->
+Bluetooth and connect again.
+
+Flashing `FoloToy-AI-Passport.bin` at `0x10000` updates the application without
+touching NVS. The merged image written from `0x0` fills the gaps, including the
+NVS partition at `0x9000`, with `0xFF`.
+
 ## Legacy Wi-Fi mode
 
 **Cindy Tasks** remains a separate, explicitly selected LAN mode using the ignored `main/app_config.h` and `python3 bridge/server.py --port 8787`. Tasks come from a file; HTTP chunked PCM is archived as WAV. It does not supply live Cindy events or transcription. BLE never switches to this path. Local configured firmware may contain credentials and must not be uploaded publicly.

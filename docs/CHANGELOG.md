@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Drop a stored bond whose link is not authenticated and log BLE connect, disconnect and security state, so a Mac left with stale pairing material can pair again instead of being disconnected on every reconnect.
+
 - Render task text with a Flash-resident Noto CJK font and preserve UTF-8 truncation boundaries. Add bounded Opus recording over authenticated BLE indications for the matching Cindy transcription adapter. Completed-task retention is provided by the desktop adapter.
 
 - Add an opt-in Cindy BLE task mode with authenticated passkey pairing, atomic bounded snapshots, waiting-state color, stale-state clearing and task-ID button actions. Requires the matching macOS Cindy adapter.

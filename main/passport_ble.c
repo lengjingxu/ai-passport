@@ -2,6 +2,7 @@
 #include "passport_protocol.h"
 #include "demo_radio.h"
 #include "esp_random.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
@@ -10,6 +11,7 @@
 #include "host/ble_gatt.h"
 #include "host/ble_sm.h"
 #include "host/ble_att.h"
+#include "host/ble_store.h"
 #include "host/util/util.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
@@ -18,6 +20,8 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
+
+static const char *TAG = "passport_ble";
 
 // Cindy-owned service; distinct from Nordic UART and reference firmware.
 #define UUID(last) BLE_UUID128_INIT(last,0x83,0x93,0xa4,0x21,0x46,0x86,0xa1,0x9d,0x49,0xc4,0x51,0x01,0x00,0xdc,0xc1)
@@ -83,13 +87,19 @@ static int gap_event(struct ble_gap_event *e, void *arg)
     (void)arg;
     switch (e->type) {
     case BLE_GAP_EVENT_CONNECT:
-        if (!e->connect.status) connection = e->connect.conn_handle;
-        else if (wanted) failure = advertise();
+        if (!e->connect.status) {
+            connection = e->connect.conn_handle;
+            ESP_LOGI(TAG, "connected handle=%d", e->connect.conn_handle);
+        } else {
+            ESP_LOGW(TAG, "connect failed status=%d", e->connect.status);
+            if (wanted) failure = advertise();
+        }
         break;
     case BLE_GAP_EVENT_DISCONNECT:
         connection_generation++;
         secure = false; subscribed = false; voice_subscribed = false; passkey = -1;
         connection = BLE_HS_CONN_HANDLE_NONE;
+        ESP_LOGI(TAG, "disconnected reason=%d", e->disconnect.reason);
         decoder.used = 0;
         incoming.count = 0;
         xQueueOverwrite(snapshots, &incoming);
@@ -107,10 +117,22 @@ static int gap_event(struct ble_gap_event *e, void *arg)
         break;
     case BLE_GAP_EVENT_ENC_CHANGE: {
         struct ble_gap_conn_desc desc;
-        secure = !e->enc_change.status && !ble_gap_conn_find(e->enc_change.conn_handle, &desc)
-                 && desc.sec_state.encrypted && desc.sec_state.authenticated && desc.sec_state.key_size == 16;
+        bool found = ble_gap_conn_find(e->enc_change.conn_handle, &desc) == 0;
+        secure = !e->enc_change.status && found && desc.sec_state.encrypted
+                 && desc.sec_state.authenticated && desc.sec_state.key_size == 16;
         passkey = -1;
-        if (!secure) ble_gap_terminate(e->enc_change.conn_handle, BLE_ERR_AUTH_FAIL);
+        if (!secure) {
+            // A bond from an earlier just-works pairing encrypts but stays
+            // unauthenticated, so the central would reconnect with the same key
+            // forever. Drop it here so the next attempt pairs with a passkey.
+            int rc = found ? ble_store_util_delete_peer(&desc.peer_id_addr) : BLE_HS_ENOTCONN;
+            ESP_LOGW(TAG, "insecure link status=%d encrypted=%d authenticated=%d key=%u drop=%d",
+                     e->enc_change.status, found && desc.sec_state.encrypted,
+                     found && desc.sec_state.authenticated, found ? desc.sec_state.key_size : 0, rc);
+            ble_gap_terminate(e->enc_change.conn_handle, BLE_ERR_AUTH_FAIL);
+        } else {
+            ESP_LOGI(TAG, "secure link established");
+        }
         break;
     }
     case BLE_GAP_EVENT_PASSKEY_ACTION: {
