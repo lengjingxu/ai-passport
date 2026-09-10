@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Rework Cindy task cards and details to separate titles, status and bounded scrolling messages; keep navigation and bridge-file provenance visible, and show the target task while recording. Preserve the pixel theme and existing button controls.
+
 - Use Wi-Fi performance mode only during recording and restore the previous mode on exit; disable TCP small-packet coalescing for PCM uploads and log transmitted bytes and maximum write time.
 
 - Fixed false recording queue timeouts during buffered microphone bursts by allowing a bounded 20 ms wait for the uploader; added controller regressions and explicit task-source/upload-interruption logs.
