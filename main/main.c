@@ -15,6 +15,8 @@
 #include "lvgl.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 
 static const char *TAG = "main";
 
@@ -39,6 +41,8 @@ static lv_obj_t *s_rows[DEMO_COUNT];
 static lv_obj_t *s_mascot;
 static int  s_sel;                 // 当前选中项
 static int  s_active = -1;         // 当前所在演示页;-1 = 在菜单
+typedef struct { bsp_btn_t btn; bsp_btn_ev_t ev; } key_event_t;
+static QueueHandle_t s_keys;
 
 static void menu_refresh(void) {
     for (size_t i = 0; i < DEMO_COUNT; i++) {
@@ -75,9 +79,14 @@ static void enter_menu(void) {
     menu_build();
 }
 
-// 按键回调运行在 button 组件的任务里,操作 LVGL 必须加锁。
+// The button task only queues input; page lifecycle runs in the application task.
 static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
     (void)user;
+    key_event_t event = { btn, ev };
+    if (xQueueSend(s_keys, &event, 0) != pdTRUE) ESP_LOGW(TAG, "Key queue full");
+}
+
+static void handle_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
     if (!bsp_lvgl_lock(500)) return;
 
     if (s_active >= 0) {
@@ -126,7 +135,8 @@ void app_main(void) {
 
     // 其余外设单项失败不阻塞:菜单里标 [FAIL],其他项照常可测。
     s_ok[0] = true;                                   // Display 已确认可用
-    s_ok[1] = (bsp_button_init(on_key, NULL) == ESP_OK);
+    s_keys = xQueueCreate(8, sizeof(key_event_t));
+    s_ok[1] = s_keys && (bsp_button_init(on_key, NULL) == ESP_OK);
     s_ok[2] = (bsp_audio_init() == ESP_OK);
     s_ok[3] = (bsp_battery_init() == ESP_OK);
     s_ok[4] = true;                                    // 页面内按需初始化并显示错误
@@ -138,4 +148,9 @@ void app_main(void) {
 
     ESP_LOGI(TAG, "就绪:Display=%d Button=%d Audio=%d Battery=%d",
              s_ok[0], s_ok[1], s_ok[2], s_ok[3]);
+    if (!s_keys) return;
+    key_event_t event;
+    while (xQueueReceive(s_keys, &event, portMAX_DELAY) == pdTRUE) {
+        handle_key(event.btn, event.ev);
+    }
 }

@@ -12,6 +12,7 @@
 
 #include "bsp_audio.h"
 #include "bsp_display.h"
+#include "bsp_battery.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -22,6 +23,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #define REC_HZ          16000
 #define REC_BPS         (REC_HZ * 2)                 // 16bit mono = 32KB/s
@@ -34,10 +36,10 @@ typedef enum { CMD_NONE = 0, CMD_RECORD, CMD_STOP_SEND } cmd_t;
 
 static const char *TAG = "demo_tasks";
 
-static TaskHandle_t s_worker;
-static volatile bool s_exit;
-static volatile cmd_t s_cmd;
-static volatile bool s_recording;
+static atomic_bool s_worker_running;
+static atomic_bool s_exit;
+static _Atomic(cmd_t) s_cmd;
+static atomic_bool s_recording;
 
 static tasks_model_t s_model;
 static view_t s_view;
@@ -45,6 +47,7 @@ static char s_line[96];                 // 屏幕右上角状态行（IP / 错�
 
 static lv_obj_t *s_scr;
 static lv_obj_t *s_line_label;
+static lv_obj_t *s_battery_label;
 static lv_obj_t *s_box_list, *s_box_detail, *s_box_record;
 static lv_obj_t *s_cards[TASKS_MODEL_MAX];
 static lv_obj_t *s_rec_sec, *s_rec_bar, *s_rec_hint;
@@ -192,9 +195,12 @@ static void do_poll(void) {
         char ip[32];
         ip_text(ip, sizeof(ip));
         snprintf(s_line, sizeof(s_line), "%s  tasks:%d", ip, count);
-        if (tasks_model_set_items(&s_model, items, count)) list_rebuild();
+        if (tasks_model_set_items(&s_model, items, count)) {
+            list_rebuild();
+            if (s_view == VIEW_DETAIL) detail_show();
+        }
     } else {
-        snprintf(s_line, sizeof(s_line), "bridge unreachable");
+        snprintf(s_line, sizeof(s_line), "Bridge error: %s", esp_err_to_name(err));
     }
     status_refresh();
     bsp_lvgl_unlock();
@@ -254,7 +260,7 @@ static void do_record(void) {
             bsp_lvgl_unlock();
         }
     }
-    bool submit = !s_exit && s_cmd == CMD_STOP_SEND && fill > 0;
+    bool submit = !s_exit && (s_cmd == CMD_STOP_SEND || fill == (int)cap) && fill > 0;
     s_cmd = CMD_NONE;
     s_recording = false;
 
@@ -287,10 +293,16 @@ static void worker_task(void *arg) {
             int64_t now = esp_timer_get_time() / 1000;
             if (now - last_poll >= POLL_PERIOD_MS) {
                 last_poll = now;
+                int battery = bsp_battery_soc();
+                if (bsp_lvgl_lock(200)) {
+                    if (battery >= 0) lv_label_set_text_fmt(s_battery_label, "%d%%", battery);
+                    else lv_label_set_text(s_battery_label, "--%");
+                    bsp_lvgl_unlock();
+                }
                 if (app_wifi_is_connected()) {
                     do_poll();
                 } else if (bsp_lvgl_lock(200)) {
-                    ip_text(s_line, sizeof(s_line));
+                    app_wifi_status(s_line, sizeof(s_line));
                     status_refresh();
                     bsp_lvgl_unlock();
                 }
@@ -298,7 +310,8 @@ static void worker_task(void *arg) {
         }
         vTaskDelay(pdMS_TO_TICKS(WORKER_TICK_MS));
     }
-    s_worker = NULL;
+    app_wifi_stop();
+    s_worker_running = false;
     vTaskDelete(NULL);
 }
 
@@ -312,18 +325,27 @@ void demo_tasks_enter(void) {
 
     s_scr = ui_pixel_screen_create("CINDY");
     s_line_label = ui_pixel_label(s_scr, s_line, &lv_font_montserrat_14, UI_SKY_DARK);
-    lv_obj_align(s_line_label, LV_ALIGN_TOP_RIGHT, -8, 46);
+    lv_obj_set_width(s_line_label, 224);
+    lv_label_set_long_mode(s_line_label, LV_LABEL_LONG_WRAP);
+    lv_obj_align(s_line_label, LV_ALIGN_TOP_LEFT, 8, 46);
+    s_battery_label = ui_pixel_label(s_scr, "--%", &lv_font_montserrat_14, UI_INK);
+    lv_obj_align(s_battery_label, LV_ALIGN_TOP_RIGHT, -8, 25);
 
-    s_box_list = make_box(s_scr, 68);
-    s_box_detail = make_box(s_scr, 68);
-    s_box_record = make_box(s_scr, 68);
+    s_box_list = make_box(s_scr, 88);
+    lv_obj_add_flag(s_box_list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(s_box_list, LV_DIR_VER);
+    s_box_detail = make_box(s_scr, 88);
+    s_box_record = make_box(s_scr, 88);
     lv_obj_add_flag(s_box_detail, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_box_record, LV_OBJ_FLAG_HIDDEN);
 
     list_rebuild();
 
-    if (xTaskCreate(worker_task, "tasks_work", 8192, NULL, 5, &s_worker) != pdPASS) {
-        s_worker = NULL;
+    s_worker_running = true;
+    if (xTaskCreate(worker_task, "tasks_work", 8192, NULL, 5, NULL) != pdPASS) {
+        s_worker_running = false;
+        snprintf(s_line, sizeof(s_line), "Task worker: no memory");
+        status_refresh();
         ESP_LOGE(TAG, "worker task create failed");
     }
     lv_screen_load(s_scr);
@@ -331,22 +353,26 @@ void demo_tasks_enter(void) {
 
 void demo_tasks_exit(void) {
     s_exit = true;
-    int waited = 0;
-    while (s_worker && waited < 4000) {
+    while (s_worker_running) {
         bsp_lvgl_unlock();                  // 放锁让 worker 完成最后的 UI 清理
         vTaskDelay(pdMS_TO_TICKS(20));
-        waited += 20;
         while (!bsp_lvgl_lock(100)) vTaskDelay(pdMS_TO_TICKS(10));
     }
+    if (s_scr) lv_obj_delete(s_scr);
     s_scr = NULL;
     s_line_label = NULL;
+    s_battery_label = NULL;
     s_box_list = s_box_detail = s_box_record = NULL;
     s_rec_sec = s_rec_bar = s_rec_hint = NULL;
     for (int i = 0; i < TASKS_MODEL_MAX; i++) s_cards[i] = NULL;
 }
 
 void demo_tasks_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
-    if (!bsp_lvgl_lock(500)) return;
+    // The application input dispatcher already holds the LVGL lock.
+    if (ev == BSP_BTN_CLICK && btn == BSP_BTN_OK && s_cmd == CMD_RECORD) {
+        s_cmd = CMD_STOP_SEND;
+        return;
+    }
     if (ev == BSP_BTN_CLICK && !s_recording) {
         int delta = btn == BSP_BTN_UP ? -1 : 1;
         if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
@@ -367,5 +393,4 @@ void demo_tasks_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
             }
         }
     }
-    bsp_lvgl_unlock();
 }
