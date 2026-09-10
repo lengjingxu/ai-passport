@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Fixed Cindy Tasks station/DHCP ownership, connection diagnostics, page shutdown, recording stop/send, list scrolling and detail refresh; added station lifecycle regression tests.
+
 - Added the Cindy task bridge demo: a Tasks menu page with Wi-Fi STA connection (credentials in a gitignored main/app_config.h), 3-second polling of a local bridge server for up to 8 tasks with status chips and latest-message previews, a task detail view, and hold-to-record 16 kHz mono PCM feedback submitted over HTTP; added the dependency-free bridge/server.py that serves tasks.json and archives recordings as WAV files, plus host tests for the task list model.
 - Added the supplied 80-byte CW2017 profile for the specified 520 mAh cell, including content/update-flag checks, verified writes, the required restart sequence, and bounded SOC-readiness polling.
 

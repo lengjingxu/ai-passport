@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- 修复 Cindy Tasks 的 STA／DHCP 资源归属、连接诊断、页面退出、录音停止发送、列表滚动和详情更新，并新增 STA 生命周期回归测试。
+
 - 新增 Cindy 任务桥演示：Tasks 菜单页支持 Wi-Fi STA 连接（凭证放在 gitignore 的 main/app_config.h），每 3 秒轮询本地桥接服务获取最多 8 条任务的状态角标与最新消息预览，提供任务详情页，并可按键录制 16kHz 单声道 PCM 反馈经 HTTP 提交；新增零依赖的 bridge/server.py，负责提供 tasks.json 并把录音归档为 WAV 文件，同时为任务列表模型补充 host tests。
 - 加入厂家为优特利 520mAh 电芯生成的 80 字节 CW2017 profile，并实现内容与更新标志检查、写入后校验、规定的重启时序以及有上限的 SOC 就绪等待。
 

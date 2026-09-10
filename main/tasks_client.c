@@ -17,9 +17,13 @@ static esp_err_t read_body(esp_http_client_handle_t client, char **out, int *out
     const int total = 8 * 1024;
     char *buf = malloc(total + 1);
     if (!buf) return ESP_ERR_NO_MEM;
-    int len = 0, n;
+    int len = 0, n = 0;
     while (len < total && (n = esp_http_client_read(client, buf + len, total - len)) > 0) {
         len += n;
+    }
+    if (n < 0 || !esp_http_client_is_complete_data_received(client)) {
+        free(buf);
+        return ESP_ERR_INVALID_RESPONSE;
     }
     buf[len] = 0;
     *out = buf;
@@ -67,6 +71,10 @@ esp_err_t tasks_client_fetch(task_item_t *out, int max, int *count) {
     }
 
     cJSON *arr = cJSON_IsArray(root) ? root : cJSON_GetObjectItem(root, "tasks");
+    if (!cJSON_IsArray(arr)) {
+        cJSON_Delete(root);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
     int n = 0;
     cJSON *entry;
     cJSON_ArrayForEach(entry, arr) {
@@ -114,7 +122,7 @@ esp_err_t tasks_client_post_feedback(const char *task_id, const void *pcm,
 
     esp_err_t err = esp_http_client_open(client, (int)bytes);
     if (err == ESP_OK) {
-        if (esp_http_client_write(client, pcm, (int)bytes) < 0) err = ESP_FAIL;
+        if (esp_http_client_write(client, pcm, (int)bytes) != (int)bytes) err = ESP_FAIL;
     }
     if (err == ESP_OK) {
         err = esp_http_client_fetch_headers(client) >= 0 ? ESP_OK : ESP_FAIL;

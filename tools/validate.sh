@@ -33,6 +33,7 @@ run_static_checks() {
         -o "${test_dir}/test_tasks_model"
     "${test_dir}/test_tasks_model"
     python3 tests/test_verify_firmware.py
+    python3 tests/test_app_wifi.py
     rm -rf "${test_dir}"
     echo "Host tests: PASS"
 }
