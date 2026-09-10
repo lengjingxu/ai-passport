@@ -328,6 +328,7 @@ static void worker_task(void *arg) {
     while (!s_exit) {
         if (s_cmd == CMD_RECORD) {
             do_record();
+            last_poll = esp_timer_get_time() / 1000;
         } else if (!s_recording) {
             int64_t now = esp_timer_get_time() / 1000;
             if (now - last_poll >= POLL_PERIOD_MS) {
