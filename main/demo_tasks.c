@@ -51,13 +51,14 @@ static char s_line[96];                 // 屏幕右上角状态行（IP / 错�
 static lv_obj_t *s_scr;
 static lv_obj_t *s_line_label;
 static lv_obj_t *s_battery_label;
+static lv_obj_t *s_nav_label;
 static lv_obj_t *s_box_list, *s_box_detail, *s_box_record;
 static lv_obj_t *s_cards[TASKS_MODEL_MAX];
 static lv_obj_t *s_rec_sec, *s_rec_bar, *s_rec_hint;
 
 static const uint32_t CHIP_COLORS[] = {
     [TASK_CHIP_QUEUED]  = 0x78909C,
-    [TASK_CHIP_RUNNING] = UI_YELLOW,
+    [TASK_CHIP_RUNNING] = UI_SKY_DARK,
     [TASK_CHIP_DONE]    = UI_GRASS,
     [TASK_CHIP_FAILED]  = UI_RED,
     [TASK_CHIP_UNKNOWN] = 0x78909C,
@@ -67,7 +68,7 @@ static lv_obj_t *make_box(lv_obj_t *parent, int y) {
     lv_obj_t *box = lv_obj_create(parent);
     lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_pos(box, 0, y);
-    lv_obj_set_size(box, 240, 320 - y);
+    lv_obj_set_size(box, 240, 194);
     lv_obj_set_style_bg_opa(box, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(box, 0, 0);
     lv_obj_set_style_pad_all(box, 0, 0);
@@ -82,6 +83,8 @@ static void view_show(view_t v) {
     lv_obj_t *target = v == VIEW_LIST ? s_box_list
                      : v == VIEW_DETAIL ? s_box_detail : s_box_record;
     lv_obj_remove_flag(target, LV_OBJ_FLAG_HIDDEN);
+    lv_label_set_text(s_nav_label, v == VIEW_LIST ? "U/D: select   OK: open"
+                     : v == VIEW_DETAIL ? "U/D: task   OK: record" : "Hold OK: cancel & exit");
 }
 
 static void list_highlight(void) {
@@ -98,28 +101,32 @@ static void list_rebuild(void) {
     for (int i = 0; i < TASKS_MODEL_MAX; i++) s_cards[i] = NULL;
 
     if (s_model.count == 0) {
-        lv_obj_t *empty = ui_pixel_label(s_box_list, "No tasks yet",
+        lv_obj_t *empty = ui_pixel_label(s_box_list, "No tasks yet\nWaiting for bridge",
                                          &lv_font_montserrat_14, 0x5A6B7A);
-        lv_obj_center(empty);
+        lv_obj_set_style_text_align(empty, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(empty, LV_ALIGN_TOP_MID, 0, 110);
+        ui_pixel_mascot_create(s_box_list, 101, 44);
         return;
     }
     for (int i = 0; i < s_model.count; i++) {
         const task_item_t *it = &s_model.items[i];
-        lv_obj_t *card = ui_pixel_panel_create(s_box_list, 12, 6 + i * 60, 216, 54, UI_PAPER);
+        lv_obj_t *card = ui_pixel_panel_create(s_box_list, 12, 6 + i * 88, 216, 80, UI_PAPER);
 
         lv_obj_t *title = ui_pixel_label(card, it->title, &lv_font_montserrat_14, UI_INK);
-        lv_obj_set_width(title, 128);
+        lv_obj_set_width(title, 194);
         lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
         lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
 
         lv_obj_t *badge = ui_pixel_label(card, it->status,
                                          &lv_font_montserrat_14, CHIP_COLORS[tasks_model_chip(it->status)]);
-        lv_obj_align(badge, LV_ALIGN_TOP_RIGHT, 0, 0);
+        lv_obj_set_width(badge, 194);
+        lv_label_set_long_mode(badge, LV_LABEL_LONG_DOT);
+        lv_obj_align(badge, LV_ALIGN_TOP_LEFT, 0, 20);
 
         char prev[64];
         tasks_model_preview(it->message, prev, sizeof(prev));
         lv_obj_t *msg = ui_pixel_label(card, prev, &lv_font_montserrat_14, 0x5A6B7A);
-        lv_obj_set_width(msg, 200);
+        lv_obj_set_width(msg, 194);
         lv_label_set_long_mode(msg, LV_LABEL_LONG_DOT);
         lv_obj_align(msg, LV_ALIGN_BOTTOM_LEFT, 0, 0);
 
@@ -133,7 +140,7 @@ static void detail_show(void) {
     if (!it) { view_show(VIEW_LIST); return; }
 
     lv_obj_clean(s_box_detail);
-    lv_obj_t *panel = ui_pixel_panel_create(s_box_detail, 12, 6, 216, 214, UI_PAPER);
+    lv_obj_t *panel = ui_pixel_panel_create(s_box_detail, 12, 6, 216, 182, UI_PAPER);
 
     lv_obj_t *title = ui_pixel_label(panel, it->title, &lv_font_montserrat_14, UI_INK);
     lv_obj_set_width(title, 190);
@@ -142,46 +149,44 @@ static void detail_show(void) {
 
     lv_obj_t *status = ui_pixel_label(panel, it->status,
                                       &lv_font_montserrat_14, CHIP_COLORS[tasks_model_chip(it->status)]);
-    lv_obj_align(status, LV_ALIGN_TOP_RIGHT, 0, 0);
+    lv_obj_set_width(status, 190);
+    lv_label_set_long_mode(status, LV_LABEL_LONG_DOT);
+    lv_obj_align(status, LV_ALIGN_TOP_LEFT, 0, 23);
 
     lv_obj_t *msg = ui_pixel_label(panel, it->message, &lv_font_montserrat_14, 0x3A4A5A);
     lv_obj_set_width(msg, 190);
-    lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
-    lv_obj_align(msg, LV_ALIGN_TOP_LEFT, 0, 26);
+    lv_obj_set_height(msg, 108);
+    lv_label_set_long_mode(msg, LV_LABEL_LONG_SCROLL);
+    lv_obj_align(msg, LV_ALIGN_TOP_LEFT, 0, 48);
 
-    lv_obj_t *hint = ui_pixel_label(panel, "OK: record  U/D: switch",
-                                    &lv_font_montserrat_14, UI_SKY_DARK);
-    lv_obj_align(hint, LV_ALIGN_BOTTOM_LEFT, 0, 0);
     view_show(VIEW_DETAIL);
 }
 
 static void record_show(void) {
     lv_obj_clean(s_box_record);
-    s_rec_sec = ui_pixel_label(s_box_record, "0s", &lv_font_montserrat_20, UI_INK);
-    lv_obj_align(s_rec_sec, LV_ALIGN_TOP_MID, 0, 40);
-
-    s_rec_bar = lv_bar_create(s_box_record);
-    lv_obj_set_size(s_rec_bar, 200, 14);
-    lv_obj_align(s_rec_bar, LV_ALIGN_TOP_MID, 0, 90);
+    lv_obj_t *panel = ui_pixel_panel_create(s_box_record, 12, 6, 216, 182, UI_PAPER);
+    const task_item_t *it = tasks_model_current(&s_model);
+    lv_obj_t *title = ui_pixel_label(panel, it ? it->title : "", &lv_font_montserrat_14, UI_INK);
+    lv_obj_set_width(title, 194);
+    lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_t *label = ui_pixel_label(panel, "VOICE FEEDBACK", &lv_font_montserrat_14, UI_RED);
+    lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 25);
+    s_rec_sec = ui_pixel_label(panel, "0s / 30s", &lv_font_montserrat_20, UI_INK);
+    lv_obj_align(s_rec_sec, LV_ALIGN_TOP_MID, 0, 53);
+    s_rec_bar = lv_bar_create(panel);
+    lv_obj_set_size(s_rec_bar, 190, 14);
+    lv_obj_align(s_rec_bar, LV_ALIGN_TOP_MID, 0, 91);
+    lv_obj_set_style_bg_color(s_rec_bar, lv_color_hex(UI_MUTED), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_rec_bar, lv_color_hex(UI_GRASS), LV_PART_INDICATOR);
     lv_bar_set_range(s_rec_bar, 0, 100);
-
-    s_rec_hint = ui_pixel_label(s_box_record, "OK: stop & send", &lv_font_montserrat_14, UI_SKY_DARK);
-    lv_obj_align(s_rec_hint, LV_ALIGN_TOP_MID, 0, 140);
+    s_rec_hint = ui_pixel_label(panel, "OK: stop & send", &lv_font_montserrat_14, UI_SKY_DARK);
+    lv_obj_align(s_rec_hint, LV_ALIGN_TOP_MID, 0, 129);
     view_show(VIEW_RECORD);
 }
 
 static void status_refresh(void) {
     if (s_line_label) lv_label_set_text(s_line_label, s_line);
-}
-
-static void ip_text(char *out, size_t cap) {
-    esp_netif_t *netif = esp_netif_get_default_netif();
-    esp_netif_ip_info_t info;
-    if (!netif || esp_netif_get_ip_info(netif, &info) != ESP_OK || info.ip.addr == 0) {
-        snprintf(out, cap, "Wi-Fi...");
-        return;
-    }
-    snprintf(out, cap, "WiFi " IPSTR, IP2STR(&info.ip));
 }
 
 static void do_poll(void) {
@@ -195,9 +200,7 @@ static void do_poll(void) {
     }
 
     if (err == ESP_OK) {
-        char ip[32];
-        ip_text(ip, sizeof(ip));
-        snprintf(s_line, sizeof(s_line), "%s  tasks:%d", ip, count);
+        snprintf(s_line, sizeof(s_line), "Bridge connected | %d tasks", count);
         if (tasks_model_set_items(&s_model, items, count)) {
             list_rebuild();
             if (s_view == VIEW_DETAIL) detail_show();
@@ -398,12 +401,18 @@ void demo_tasks_enter(void) {
     snprintf(s_line, sizeof(s_line), "Wi-Fi...");
 
     s_scr = ui_pixel_screen_create("CINDY");
-    s_line_label = ui_pixel_label(s_scr, s_line, &lv_font_montserrat_14, UI_SKY_DARK);
+    s_line_label = ui_pixel_label(s_scr, s_line, &lv_font_montserrat_14, UI_INK);
     lv_obj_set_width(s_line_label, 224);
-    lv_label_set_long_mode(s_line_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_height(s_line_label, 36);
+    lv_label_set_long_mode(s_line_label, LV_LABEL_LONG_DOT);
     lv_obj_align(s_line_label, LV_ALIGN_TOP_LEFT, 8, 46);
     s_battery_label = ui_pixel_label(s_scr, "--%", &lv_font_montserrat_14, UI_INK);
     lv_obj_align(s_battery_label, LV_ALIGN_TOP_RIGHT, -8, 25);
+
+    lv_obj_t *source = ui_pixel_label(s_scr, "Source: bridge file", &lv_font_montserrat_14, UI_INK);
+    lv_obj_align(source, LV_ALIGN_TOP_LEFT, 8, 282);
+    s_nav_label = ui_pixel_label(s_scr, "U/D: select   OK: open", &lv_font_montserrat_14, UI_INK);
+    lv_obj_align(s_nav_label, LV_ALIGN_TOP_LEFT, 8, 299);
 
     s_box_list = make_box(s_scr, 88);
     lv_obj_add_flag(s_box_list, LV_OBJ_FLAG_SCROLLABLE);
@@ -436,6 +445,7 @@ void demo_tasks_exit(void) {
     s_scr = NULL;
     s_line_label = NULL;
     s_battery_label = NULL;
+    s_nav_label = NULL;
     s_box_list = s_box_detail = s_box_record = NULL;
     s_rec_sec = s_rec_bar = s_rec_hint = NULL;
     for (int i = 0; i < TASKS_MODEL_MAX; i++) s_cards[i] = NULL;
