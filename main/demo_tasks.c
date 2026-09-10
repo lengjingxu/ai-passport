@@ -229,7 +229,10 @@ static void upload_recording(void *arg) {
         if (upload->abort || s_exit) break;
         esp_err_t err = chunk.bytes ? tasks_feedback_write(upload->client, chunk.pcm, chunk.bytes)
                                    : tasks_feedback_finish(upload->client);
-        if (err != ESP_OK) upload->error = err;
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "record upload %s failed: %s", chunk.bytes ? "write" : "finish", esp_err_to_name(err));
+            upload->error = err;
+        }
         if (err != ESP_OK || !chunk.bytes) break;
     }
     esp_http_client_cleanup(upload->client);
@@ -275,7 +278,13 @@ static void do_record(void) {
         chunk.bytes = REC_MAX_BYTES - fill < sizeof(chunk.pcm) ? REC_MAX_BYTES - fill : sizeof(chunk.pcm);
         err = bsp_audio_read(chunk.pcm, chunk.bytes);
         if (err != ESP_OK) break;
-        if (!xQueueSend(upload.queue, &chunk, 0)) { err = ESP_ERR_TIMEOUT; break; }
+        // A buffered microphone burst can fill the queue before the lower-priority
+        // uploader runs. Waiting yields to it; sustained congestion still aborts.
+        if (!xQueueSend(upload.queue, &chunk, pdMS_TO_TICKS(20))) {
+            ESP_LOGE(TAG, "record queue full after 20ms: captured=%u", (unsigned)fill);
+            err = ESP_ERR_TIMEOUT;
+            break;
+        }
         fill += chunk.bytes;
         if (fill % 4096 == 0 && bsp_lvgl_lock(10)) {
             int peak = 0;

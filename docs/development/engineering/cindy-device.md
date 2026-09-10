@@ -84,8 +84,10 @@ bounded streaming; the current LAN bridge accepts uncompressed PCM (32,000
 bytes/second). No Opus encoder is added in this change.
 
 Eight 512-byte PCM blocks decouple microphone reads from network writes. Queue
-metadata, the uploader stack and HTTP buffers consume additional memory. Queue
-exhaustion aborts the recording instead of silently dropping speech. Start/end
+metadata, the uploader stack and HTTP buffers consume additional memory. A full queue
+waits up to 20 ms so the lower-priority uploader can drain buffered microphone
+bursts. Continued exhaustion aborts the recording instead of silently dropping
+speech. Start/end
 logs include free heap, largest block, byte count and error code, without audio
 or credentials. On-device timing, capture continuity and repeated-recording
 heap stability remain hardware acceptance checks.
@@ -96,3 +98,10 @@ it only after a valid final chunk; HTTP 201 acknowledges the saved file.
 Cancellation or truncation removes the temporary file. A missing acknowledgement
 is a send failure; the device does not retry automatically. Update bridge and
 firmware together; fixed Content-Length uploads are no longer accepted.
+
+The host recording-controller regression models buffered input and a sender that
+runs when the producer waits. It covers repeated recordings, sustained queue
+congestion, cancellation, the duration limit and resource cleanup; it does not
+measure hardware scheduling or audio continuity. Bridge logs identify task data
+as `source=file`, and report discarded audio byte counts when an upload ends
+before its final chunk. These logs do not indicate a live Cindy subscription.

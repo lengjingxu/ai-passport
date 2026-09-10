@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Fixed false recording queue timeouts during buffered microphone bursts by allowing a bounded 20 ms wait for the uploader; added controller regressions and explicit task-source/upload-interruption logs.
+
 - Replaced whole-recording RAM allocation with bounded PCM streaming (30-second limit); reject incomplete uploads and report recording memory/transport failures. Update the local bridge together with the firmware.
 
 - Fixed Cindy Tasks station/DHCP ownership, connection diagnostics, page shutdown, recording stop/send, list scrolling and detail refresh; added station lifecycle regression tests.

@@ -36,6 +36,7 @@ run_static_checks() {
     python3 tests/test_app_wifi.py
     python3 tests/test_bridge_recording.py
     python3 tests/test_recording_transport.py
+    python3 tests/test_recording_queue.py
     rm -rf "${test_dir}"
     echo "Host tests: PASS"
 }

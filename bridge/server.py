@@ -53,6 +53,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 tasks = data.get("tasks", [])
             else:
                 tasks = data
+            print(f"[tasks] GET status=200 source=file count={len(tasks)}", flush=True)
             return self.send_json(200, {"tasks": tasks})
         return self.send_json(404, {"error": "not found"})
 
@@ -86,6 +87,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     if time.monotonic() > deadline:
                         raise ValueError("recording deadline exceeded")
                     line = self.rfile.readline(32)
+                    if not line:
+                        raise ValueError("upload interrupted before final chunk")
                     if (not line.endswith(b"\r\n") or not line[:-2] or
                             any(c not in b"0123456789abcdefABCDEF" for c in line[:-2])):
                         raise ValueError("invalid chunk header")
@@ -104,6 +107,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             partial.replace(wav_path)
         except (ValueError, OSError, EOFError, wave.Error) as exc:
             partial.unlink(missing_ok=True)
+            print(f"[feedback] discarded bytes={total} reason={type(exc).__name__}: {exc}", flush=True)
             try:
                 self.send_json(400, {"error": str(exc)})
             except OSError:
