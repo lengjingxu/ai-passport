@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Show task status, paged Cindy replies and transcription review on Passport; UP re-records, DOWN reads, and OK confirms sending to the original task through Cindy’s selected voice-input service.
+
 - Reduce the LVGL pool to 32 KB after measuring the Chinese task and recording pages, leaving contiguous heap for Opus initialization on ESP32-C3.
 
 - Keep the stored bond when link encryption fails or times out, and drop it only for an encrypted but unauthenticated just-works link, so one failed reconnection no longer leaves the Mac holding pairing material the device has discarded. Log BLE connect, disconnect and security state.

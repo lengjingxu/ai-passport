@@ -5,6 +5,21 @@
 
 int main(void)
 {
+    uint32_t token;
+    assert(tasks_review_token("draft:12345678", &token) && token == 0x12345678);
+    assert(tasks_review_token("retry:89abcdef", &token) && token == 0x89abcdef);
+    assert(!tasks_review_token("draft:1234567x", &token));
+    assert(!tasks_review_token("done", &token));
+    assert(tasks_detail_action("done", -1, 0x12345678) == TASK_READ_PREVIOUS);
+    assert(tasks_detail_action("done", 1, 0x12345678) == TASK_READ_NEXT);
+    assert(tasks_detail_action("done", 0, 0x12345678) == TASK_RECORD);
+    assert(tasks_detail_action("draft:12345678", -1, 0x12345678) == TASK_RECORD_AGAIN);
+    assert(tasks_detail_action("draft:12345678", 1, 0x12345678) == TASK_READ_NEXT);
+    assert(tasks_detail_action("draft:12345678", 0, 0x12345678) == TASK_SEND);
+    assert(tasks_detail_action("retry:12345678", 0, 0x12345678) == TASK_SEND);
+    assert(tasks_detail_action("asr:12345678", 0, 0x12345678) == TASK_BUSY);
+    assert(tasks_detail_action("sending", -1, 0x12345678) == TASK_BUSY);
+    assert(tasks_detail_action("draft:12345678", 0, 0x87654321) == TASK_BUSY);
     tasks_model_t m;
     tasks_model_init(&m);
     assert(m.count == 0 && m.selected == 0);

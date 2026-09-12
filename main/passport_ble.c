@@ -272,6 +272,18 @@ esp_err_t passport_ble_open_task(const char *id)
 
 bool passport_ble_connected(void) { return secure; }
 
+esp_err_t passport_ble_action(passport_action_t action, const char *id, uint32_t token)
+{
+    int conn = connection;
+    if (!secure || !subscribed) return ESP_ERR_INVALID_STATE;
+    unsigned char packet[PASSPORT_ACTION_BYTES];
+    if (passport_encode_action(action, id, token, packet) < 0) return ESP_ERR_INVALID_ARG;
+    if (sizeof(packet) + 3 > ble_att_mtu(conn)) return ESP_ERR_INVALID_SIZE;
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(packet, sizeof(packet));
+    if (!om) return ESP_ERR_NO_MEM;
+    return ble_gatts_notify_custom(conn, tx_handle, om) == 0 ? ESP_OK : ESP_FAIL;
+}
+
 // Only the recording sender calls this blocking function. The NimBLE task
 // signals acknowledged indications; disconnect/timeout aborts the recording.
 esp_err_t passport_ble_voice_send(const void *data, size_t size)
