@@ -6,7 +6,7 @@
 
 ## 中文与录音参考
 
-[AI Passport 小智](https://github.com/FoloToy/folo-ai-passport-xiaozhi/tree/d24fce080d86d7cc642f71585f6efde40fb99104/main/audio) 使用 16 kHz 单声道、60 ms Opus 帧、复杂度 0 和有界队列，通过 WebSocket/Wi-Fi 传输。Cindy 参考其分帧与编码器，接入自己的蓝牙传输。固定 16 kbit/s，关闭 VBR 与 DTX，每个音频载荷为 120 字节。拥塞会中止整段录音，不静默丢字。
+[AI Passport 小智](https://github.com/FoloToy/folo-ai-passport-xiaozhi/tree/d24fce080d86d7cc642f71585f6efde40fb99104/main/audio) 使用 16 kHz 单声道、60 ms Opus 帧、复杂度 0 和有界队列，通过 WebSocket/Wi-Fi 传输。Cindy 保留相同编码器设置，在无 PSRAM 的蓝牙目标上改用 40 ms 帧。16 kbit/s 下每个载荷不超过 120 字节的 indication 限制。拥塞会中止整段录音，不静默丢字。
 
 小智使用 Noto 字库资产，支持二进制字库加载与按需字形下发。Cindy 将 14 px、1 bpp 的 Noto 中文点阵放在 Flash，来源与许可见[字库说明](../../../assets/README.zh_CN.md)。覆盖 ASCII、中文标点、扩展 A、基本汉字区和全角字符，不覆盖 emoji 与扩展 B。任务预览按 UTF-8 字符边界截断，不需要 PSRAM。
 
@@ -14,7 +14,7 @@
 
 使用配套 Cindy macOS 客户端，在设置 → 快捷键 → 配件 → Cindy Passport 中启用。设备进入 **Cindy BLE**，电脑选择发现的设备标识；macOS 请求配对时输入设备屏幕显示的码。界面显示权限与连接状态，不需要 IP 或 HTTP 桥接。菜单栏控制仍可使用。
 
-UP/DOWN 选择任务，OK 打开详情。详情中 UP/DOWN 切换任务，OK 开始录音，再按 OK 停止并发送，30 秒自动提交；长按 OK 退出并取消。采集与发送使用独立工作任务及 8 块 PCM 队列。队列满等待 20 ms 后中止；每次 indication 最多等待确认 1.5 秒。编码发送任务使用 24 KB 栈，堆内存与时序仍需实测。
+UP/DOWN 选择任务，OK 打开详情。详情中 UP/DOWN 切换任务，OK 开始录音，再按 OK 停止并发送，30 秒自动提交；长按 OK 退出并取消。Wi-Fi 录音保留独立发送任务和 8 块 PCM 队列。BLE 录音在页面 worker 的固定 28 KB 栈中运行 Opus，并把 512 字节采集块移出栈空间；每读一块就完成编码发送再读下一块。LVGL 内存池为 32 KB，高于实测 24.2 KB 的界面分配峰值，并为 Opus 留出系统堆。ESP32-C3 没有 PSRAM，不再额外申请第二个大栈。每次 indication 最多等待确认 1.5 秒；写入或确认出错会取消整段录音，不静默丢音频。
 
 客户端保留已观察到的完成/错误任务，活动提示清空后仍可选择；归档或删除后按正式任务目录移除。最多显示 8 个任务，依次优先等待、错误、运行、完成。保留记录仅在内存中，最多 100 条，适配器停止时清空；活动任务可能占满 8 个位置。这是本机任务目录，不复刻远程镜像行或侧栏排序。
 
@@ -24,7 +24,7 @@ UP/DOWN 选择任务，OK 打开详情。详情中 UP/DOWN 切换任务，OK 开
 
 服务 `C1DC0001-51C4-499D-A186-4621A4938301` 使用认证配对、Secure Connections 与 16 字节密钥。RX `8302` 接收认证写入，TX `8303` 提供认证读取和打开任务通知。快照为 uint16LE 载荷长度、版本 1、0–8 个任务，每条 328 字节：UTF-8 id/title/status/message 分别占 40/80/16/192 字节，以 NUL 填充。Mac 每 5 秒发送心跳，设备 10 秒无快照后清空任务。BLE 回调不访问 LVGL。
 
-录音特征 `8304` v1 使用 indication：`kind:u8, token:u32LE, sequence:u16LE, payload`。开始 kind 1 携带 40 字节任务 ID，序号为 0；数据 kind 2 携带 120 字节的 60 ms Opus，序号从 0 连续递增。结束 kind 3、取消 kind 4 无载荷，使用下一个序号。最多 502 帧容纳 30 秒录音、补齐帧和编码器尾部排空；Mac 拒绝不完整序列或耗时超过 45 秒的录音。Ogg 保留编码延迟和尾部静音，不猜测 preskip。没有 `8304` 支持的旧客户端不能录音，需要两端一起更新。
+录音特征 `8304` v1 使用 indication：`kind:u8, token:u32LE, sequence:u16LE, payload`。开始 kind 1 携带 40 字节任务 ID，序号为 0；数据 kind 2 携带 1–120 字节的 40 ms Opus，序号从 0 连续递增。结束 kind 3、取消 kind 4 无载荷，使用下一个序号。最多 752 帧容纳 30 秒录音、补齐帧和编码器尾部排空；Mac 拒绝不完整序列或耗时超过 45 秒的录音。Ogg 保留编码延迟和尾部静音，不猜测 preskip。没有 `8304` 支持的旧客户端不能录音，需要两端一起更新。
 
 ## 重新配对
 

@@ -124,8 +124,13 @@ static int gap_event(struct ble_gap_event *e, void *arg)
         if (!secure) {
             // A bond from an earlier just-works pairing encrypts but stays
             // unauthenticated, so the central would reconnect with the same key
-            // forever. Drop it here so the next attempt pairs with a passkey.
-            int rc = found ? ble_store_util_delete_peer(&desc.peer_id_addr) : BLE_HS_ENOTCONN;
+            // forever. Drop only that bond: a failed or timed-out encryption
+            // must keep the stored key, otherwise the central keeps its copy
+            // and macOS refuses to reconnect with "peer removed pairing
+            // information".
+            bool justworks = !e->enc_change.status && found && desc.sec_state.encrypted
+                             && !desc.sec_state.authenticated;
+            int rc = justworks ? ble_store_util_delete_peer(&desc.peer_id_addr) : BLE_HS_ENOENT;
             ESP_LOGW(TAG, "insecure link status=%d encrypted=%d authenticated=%d key=%u drop=%d",
                      e->enc_change.status, found && desc.sec_state.encrypted,
                      found && desc.sec_state.authenticated, found ? desc.sec_state.key_size : 0, rc);
@@ -188,7 +193,8 @@ static void host_task(void *arg)
 }
 esp_err_t passport_ble_start(void)
 {
-    if (initialized) return ESP_ERR_INVALID_STATE;
+    // The link outlives the Tasks page: callers may start it repeatedly.
+    if (initialized) return ESP_OK;
     esp_err_t err = demo_radio_nvs_prepare();
     if (err != ESP_OK) return err;
     snapshots = xQueueCreate(1, sizeof(snapshot_t));

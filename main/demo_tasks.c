@@ -36,6 +36,7 @@ LV_FONT_DECLARE(passport_font_14);
 #define REC_MAX_BYTES   (30 * REC_BPS)
 #define POLL_PERIOD_MS  3000
 #define WORKER_TICK_MS  150
+#define TASKS_WORKER_STACK_BYTES 28672
 
 typedef enum { VIEW_LIST = 0, VIEW_DETAIL, VIEW_RECORD } view_t;
 typedef enum { CMD_NONE = 0, CMD_RECORD, CMD_STOP_SEND } cmd_t;
@@ -50,6 +51,7 @@ static atomic_bool s_recording;
 static tasks_model_t s_model;
 static view_t s_view;
 static bool s_ble_mode;
+static bool s_model_ble;                // current list came from Bluetooth
 static char s_line[96];                 // 屏幕右上角状态行（IP / 错误）
 
 static lv_obj_t *s_scr;
@@ -59,6 +61,13 @@ static lv_obj_t *s_nav_label;
 static lv_obj_t *s_box_list, *s_box_detail, *s_box_record;
 static lv_obj_t *s_cards[TASKS_MODEL_MAX];
 static lv_obj_t *s_rec_sec, *s_rec_bar, *s_rec_hint;
+
+// The Opus encoder needs one large contiguous heap allocation. Keep the
+// page worker stack in static RAM so creating the worker cannot split that
+// heap block on the no-PSRAM C3.
+static StackType_t s_worker_stack[TASKS_WORKER_STACK_BYTES]
+    __attribute__((aligned(portBYTE_ALIGNMENT)));
+static StaticTask_t s_worker_tcb;
 
 static const uint32_t CHIP_COLORS[] = {
     [TASK_CHIP_QUEUED]  = 0x78909C,
@@ -233,19 +242,26 @@ typedef struct {
     uint32_t max_write_ms;
 } record_upload_t;
 
+static esp_err_t record_write(record_upload_t *upload, const record_chunk_t *chunk) {
+    int64_t started_us = esp_timer_get_time();
+    esp_err_t err = upload->voice
+        ? (chunk->bytes ? passport_voice_write(upload->voice, chunk->pcm, chunk->bytes)
+                        : passport_voice_finish(upload->voice))
+        : (chunk->bytes ? tasks_feedback_write(upload->client, chunk->pcm, chunk->bytes)
+                        : tasks_feedback_finish(upload->client));
+    uint32_t elapsed_ms = (esp_timer_get_time() - started_us) / 1000;
+    if (elapsed_ms > upload->max_write_ms) upload->max_write_ms = elapsed_ms;
+    if (err == ESP_OK) upload->sent_bytes += chunk->bytes;
+    return err;
+}
+
 static void upload_recording(void *arg) {
     record_upload_t *upload = arg;
     record_chunk_t chunk;
     while (!upload->abort && !s_exit) {
         if (!xQueueReceive(upload->queue, &chunk, pdMS_TO_TICKS(50))) continue;
         if (upload->abort || s_exit) break;
-        int64_t started_us = esp_timer_get_time();
-        esp_err_t err = upload->voice
-            ? (chunk.bytes ? passport_voice_write(upload->voice, chunk.pcm, chunk.bytes) : passport_voice_finish(upload->voice))
-            : (chunk.bytes ? tasks_feedback_write(upload->client, chunk.pcm, chunk.bytes) : tasks_feedback_finish(upload->client));
-        uint32_t elapsed_ms = (esp_timer_get_time() - started_us) / 1000;
-        if (elapsed_ms > upload->max_write_ms) upload->max_write_ms = elapsed_ms;
-        if (err == ESP_OK) upload->sent_bytes += chunk.bytes;
+        esp_err_t err = record_write(upload, &chunk);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "record upload %s failed: %s", chunk.bytes ? "write" : "finish", esp_err_to_name(err));
             upload->error = err;
@@ -269,18 +285,22 @@ static void do_record(void) {
     lv_label_set_text(s_rec_hint, "Connecting...");
     bsp_lvgl_unlock();
 
-    ESP_LOGI(TAG, "record start: free=%u largest=%u queue=8x512",
+    bool inline_voice = s_ble_mode;
+    ESP_LOGI(TAG, "record start: free=%u largest=%u queue=%s",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+             inline_voice ? "inline" : "8x512");
     record_upload_t upload = {0};
     bool started = false;
     bool restore_wifi = false;
     wifi_ps_type_t saved_ps = WIFI_PS_NONE;
     size_t fill = 0;
     esp_err_t err = ESP_ERR_NO_MEM;
-    upload.queue = xQueueCreate(8, sizeof(record_chunk_t));
-    upload.done = xSemaphoreCreateBinary();
-    if (!upload.queue || !upload.done) goto cleanup;
+    if (!inline_voice) {
+        upload.queue = xQueueCreate(8, sizeof(record_chunk_t));
+        upload.done = xSemaphoreCreateBinary();
+        if (!upload.queue || !upload.done) goto cleanup;
+    }
     if (s_ble_mode) {
         err = passport_voice_open(task_id, &upload.voice);
     } else {
@@ -294,25 +314,44 @@ static void do_record(void) {
     if (err != ESP_OK) goto cleanup;
     err = bsp_audio_set_format(REC_HZ, 16, 1);
     if (err != ESP_OK) goto cleanup;
-    if (xTaskCreate(upload_recording, "record_upload", s_ble_mode ? 24576 : 4096, &upload, 4, NULL) != pdPASS) {
-        err = ESP_ERR_NO_MEM;
-        goto cleanup;
+    if (!inline_voice) {
+        if (xTaskCreate(upload_recording, "record_upload", 4096, &upload, 4, NULL) != pdPASS) {
+            err = ESP_ERR_NO_MEM;
+            ESP_LOGE(TAG, "record uploader task alloc failed: free=%u largest=%u",
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+            goto cleanup;
+        }
     }
     started = true;
     s_recording = true;
     if (bsp_lvgl_lock(200)) { lv_label_set_text(s_rec_hint, "OK: stop and send"); bsp_lvgl_unlock(); }
-    record_chunk_t chunk = { .bytes = sizeof(chunk.pcm) };
+    // Keep the 512-byte DMA/read block out of the worker stack. The BLE path
+    // calls Opus inline, so every byte left on this stack is part of the codec
+    // headroom; the Wi-Fi path still copies the block into its queue.
+    static record_chunk_t chunk;
+    chunk.bytes = sizeof(chunk.pcm);
     while (!s_exit && s_cmd == CMD_RECORD && fill < REC_MAX_BYTES) {
         if (upload.error != ESP_OK) { err = upload.error; break; }
         chunk.bytes = REC_MAX_BYTES - fill < sizeof(chunk.pcm) ? REC_MAX_BYTES - fill : sizeof(chunk.pcm);
         err = bsp_audio_read(chunk.pcm, chunk.bytes);
         if (err != ESP_OK) break;
-        // A buffered microphone burst can fill the queue before the lower-priority
-        // uploader runs. Waiting yields to it; sustained congestion still aborts.
-        if (!xQueueSend(upload.queue, &chunk, pdMS_TO_TICKS(20))) {
-            ESP_LOGE(TAG, "record queue full after 20ms: captured=%u", (unsigned)fill);
-            err = ESP_ERR_TIMEOUT;
-            break;
+        if (inline_voice) {
+            // The C3 has no PSRAM. Run the Opus call on this already-sized worker
+            // stack so the encoder does not need a second 16 KB task stack.
+            err = record_write(&upload, &chunk);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "record upload write failed: %s", esp_err_to_name(err));
+                break;
+            }
+        } else {
+            // A buffered microphone burst can fill the queue before the lower-priority
+            // uploader runs. Waiting yields to it; sustained congestion still aborts.
+            if (!xQueueSend(upload.queue, &chunk, pdMS_TO_TICKS(20))) {
+                ESP_LOGE(TAG, "record queue full after 20ms: captured=%u", (unsigned)fill);
+                err = ESP_ERR_TIMEOUT;
+                break;
+            }
         }
         fill += chunk.bytes;
         if (fill % 4096 == 0 && bsp_lvgl_lock(10)) {
@@ -328,7 +367,17 @@ static void do_record(void) {
     }
     bool submit = err == ESP_OK && !s_exit && fill &&
                   (s_cmd == CMD_STOP_SEND || fill == REC_MAX_BYTES);
-    if (submit) {
+    if (inline_voice) {
+        if (submit) {
+            if (bsp_lvgl_lock(100)) { lv_label_set_text(s_rec_hint, "Sending..."); bsp_lvgl_unlock(); }
+            chunk.bytes = 0;
+            err = record_write(&upload, &chunk);
+            if (err != ESP_OK) upload.error = err;
+        }
+        upload.abort = !submit;
+        passport_voice_close(upload.voice, upload.abort || upload.error != ESP_OK || s_exit);
+        upload.voice = NULL;
+    } else if (submit) {
         if (bsp_lvgl_lock(100)) { lv_label_set_text(s_rec_hint, "Sending..."); bsp_lvgl_unlock(); }
         chunk.bytes = 0;
         // Keep cancellation responsive while the sender drains its bounded queue.
@@ -336,9 +385,11 @@ static void do_record(void) {
             if (s_exit || upload.error != ESP_OK) { submit = false; break; }
         }
     }
-    upload.abort = !submit;
-    xSemaphoreTake(upload.done, portMAX_DELAY);
-    if (upload.error != ESP_OK) err = upload.error;
+    if (!inline_voice) {
+        upload.abort = !submit;
+        xSemaphoreTake(upload.done, portMAX_DELAY);
+        if (upload.error != ESP_OK) err = upload.error;
+    }
 cleanup:
     if (!started && upload.voice) passport_voice_close(upload.voice, true);
     if (!started && upload.client) esp_http_client_cleanup(upload.client);
@@ -353,6 +404,7 @@ cleanup:
     }
     s_cmd = CMD_NONE;
     s_recording = false;
+    ESP_LOGI(TAG, "record stack free minimum=%u", (unsigned)uxTaskGetStackHighWaterMark(NULL));
     ESP_LOGI(TAG, "record end: captured=%u sent=%u max_write_ms=%u result=%s free=%u largest=%u",
              (unsigned)fill, (unsigned)upload.sent_bytes, (unsigned)upload.max_write_ms, esp_err_to_name(err), (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
@@ -372,7 +424,10 @@ cleanup:
 static void worker_task(void *arg) {
     (void)arg;
     int64_t last_poll = 0;
-    int64_t last_ble_snapshot = 0;
+    // Give a preserved list one heartbeat window after page re-entry. If the
+    // queue has no pending snapshot yet, do not expire it immediately because
+    // the Mac heartbeat is sent on its own 5-second cadence.
+    int64_t last_ble_snapshot = esp_timer_get_time() / 1000;
     esp_err_t werr = s_ble_mode ? passport_ble_start() : app_wifi_start();
     if (werr != ESP_OK) ESP_LOGE(TAG, "radio start: %s", esp_err_to_name(werr));
 
@@ -425,16 +480,19 @@ static void worker_task(void *arg) {
         }
         vTaskDelay(pdMS_TO_TICKS(WORKER_TICK_MS));
     }
-    if (s_ble_mode) {
-        if (passport_ble_stop() != ESP_OK) ESP_LOGE(TAG, "BLE stop failed");
-    } else app_wifi_stop();
+    // Bluetooth stays up after the page closes so the next visit keeps its
+    // pairing and the last snapshot. Only the Wi-Fi bridge is page scoped.
+    if (!s_ble_mode) app_wifi_stop();
     s_worker_running = false;
     vTaskDelete(NULL);
 }
 
 static void tasks_enter(bool ble) {
+    // Re-entering the Bluetooth page keeps the last received list on screen
+    // until the client pushes a fresh snapshot.
+    if (!(ble && s_model_ble)) tasks_model_init(&s_model);
     s_ble_mode = ble;
-    tasks_model_init(&s_model);
+    s_model_ble = ble;
     s_exit = false;
     s_cmd = CMD_NONE;
     s_recording = false;
@@ -466,7 +524,10 @@ static void tasks_enter(bool ble) {
     list_rebuild();
 
     s_worker_running = true;
-    if (xTaskCreate(worker_task, "tasks_work", 8192, NULL, 5, NULL) != pdPASS) {
+    // Opus encoding runs inline on BLE recordings. Keep one larger worker stack
+    // instead of allocating a second uploader stack on the no-PSRAM C3.
+    if (!xTaskCreateStatic(worker_task, "tasks_work", TASKS_WORKER_STACK_BYTES,
+                           NULL, 5, s_worker_stack, &s_worker_tcb)) {
         s_worker_running = false;
         snprintf(s_line, sizeof(s_line), "Task worker: no memory");
         status_refresh();

@@ -54,12 +54,13 @@ static queue_t *queue;
 static void *upload_arg;
 static int allocations, closed, submitted, waits, reads, stop_after, stalled, cancel;
 static size_t sent;
+static int fail_voice_write;
 static atomic_bool s_exit, s_recording;
 static bool s_ble_mode;
 typedef void passport_voice_t;
 static int passport_voice_open(const char *id, passport_voice_t **out) {(void)id;*out=(void *)1;return 0;}
-static int passport_voice_write(passport_voice_t *v, const int16_t *pcm, size_t n) {(void)v;(void)pcm;(void)n;return 0;}
-static int passport_voice_finish(passport_voice_t *v) {(void)v;return 0;}
+static int passport_voice_write(passport_voice_t *v, const int16_t *pcm, size_t n) {(void)v;(void)pcm;if (!fail_voice_write) sent += n;return fail_voice_write ? ESP_FAIL : 0;}
+static int passport_voice_finish(passport_voice_t *v) {(void)v;submitted++;return 0;}
 static void passport_voice_close(passport_voice_t *v, bool cancel) {(void)v;(void)cancel;closed++;}
 enum { CMD_NONE, CMD_RECORD, CMD_STOP_SEND };
 static int s_cmd, s_model, s_rec_hint, s_rec_bar, s_rec_sec;
@@ -108,7 +109,8 @@ static int xQueueSend(queue_t *q, const void *chunk, int ticks) {
 }
 static int xQueueReceive(queue_t *q, void *chunk, int ticks) { (void)q;(void)chunk;(void)ticks; return 0; }
 static int xTaskCreate(void (*fn)(void *), const char *name, int stack, void *arg, int priority, void *handle) {
-    (void)fn;(void)name;(void)stack;(void)priority;(void)handle;upload_arg=arg;return pdPASS;
+    (void)fn;(void)name;(void)stack;(void)priority;(void)handle;
+    upload_arg=arg;return pdPASS;
 }
 static void xSemaphoreGive(void *s) {(void)s;}
 static void xSemaphoreTake(void *s, int ticks);
@@ -131,7 +133,7 @@ static void xSemaphoreTake(void *s, int ticks) {
 static void reset(int chunks, int blocked, int cancelled) {
     s_exit=false;s_recording=false;s_cmd=CMD_RECORD;
     assert(wifi_ps == 1); fail_wifi=fail_open=0;
-    closed=submitted=waits=reads=0;sent=0;stop_after=chunks;stalled=blocked;cancel=cancelled;
+    closed=submitted=waits=reads=0;sent=0;stop_after=chunks;stalled=blocked;cancel=cancelled;fail_voice_write=0;
 }
 int main(void) {
     // Repeated recordings with a burst larger than the send queue.
@@ -155,9 +157,9 @@ int main(void) {
     s_ble_mode=true;
     reset(12, 0, 0); do_record();
     assert(submitted == 1 && sent == 12 * 512 && !allocations && closed == 1);
-    reset(12, 1, 0); do_record();
-    assert(submitted == 0 && strstr(s_line, "ESP_ERR_TIMEOUT") && !allocations && closed == 1);
     reset(12, 0, 1); do_record();
+    assert(submitted == 0 && !allocations && closed == 1);
+    reset(12, 0, 0); fail_voice_write=1; do_record();
     assert(submitted == 0 && !allocations && closed == 1);
     puts("Recording queue: PASS (bursts, congestion, cancellation, limit, repeated cleanup)");
 }
