@@ -1,6 +1,6 @@
 // main/demo_tasks.c —— Cindy 任务面板：列表 / 详情 / 录音三视图 + 轮询与录音工作任务。
 //
-// 按键(页面内)：UP/DOWN 移动选中或切换任务；OK 短按 进详情 / 开始录音 / 停止并发送；
+// 按键：列表上下选择；详情上下阅读、确认录音；转写后上重录、下阅读、确认发送。
 // OK 长按由 main.c 统一返回菜单，录音中返回即放弃本次录音。
 // 16kHz/16bit/mono PCM streams through a bounded queue to the bridge (maximum 30s).
 // Task text uses a Flash-resident Noto CJK bitmap font.
@@ -39,7 +39,7 @@ LV_FONT_DECLARE(passport_font_14);
 #define TASKS_WORKER_STACK_BYTES 28672
 
 typedef enum { VIEW_LIST = 0, VIEW_DETAIL, VIEW_RECORD } view_t;
-typedef enum { CMD_NONE = 0, CMD_RECORD, CMD_STOP_SEND } cmd_t;
+typedef enum { CMD_NONE = 0, CMD_RECORD, CMD_STOP_SEND, CMD_DETAIL, CMD_PREVIOUS, CMD_NEXT, CMD_RETRY, CMD_CONFIRM } cmd_t;
 
 static const char *TAG = "demo_tasks";
 
@@ -47,6 +47,10 @@ static atomic_bool s_worker_running;
 static atomic_bool s_exit;
 static _Atomic(cmd_t) s_cmd;
 static atomic_bool s_recording;
+static atomic_bool s_waiting_review, s_waiting_send;
+static uint32_t s_voice_token, s_action_token;
+static char s_action_task[TASK_ID_LEN];
+static esp_err_t s_action_error;
 
 static tasks_model_t s_model;
 static view_t s_view;
@@ -78,6 +82,22 @@ static const uint32_t CHIP_COLORS[] = {
     [TASK_CHIP_UNKNOWN] = 0x78909C,
 };
 
+static const char *status_text(const char *status) {
+    if (!strncmp(status, "draft:", 6)) return "请确认转写";
+    if (!strncmp(status, "retry:", 6)) return "发送失败，可重试";
+    if (!strncmp(status, "asr:", 4)) return "正在转写";
+    if (!strncmp(status, "error:", 6)) return "转写失败";
+    if (!strcmp(status, "sending")) return "正在发送";
+    switch (tasks_model_chip(status)) {
+    case TASK_CHIP_RUNNING: return "进行中";
+    case TASK_CHIP_DONE: return "已完成";
+    case TASK_CHIP_FAILED: return "失败";
+    case TASK_CHIP_WAITING: return "等待操作";
+    case TASK_CHIP_QUEUED: return "排队中";
+    default: return status;
+    }
+}
+
 static lv_obj_t *make_box(lv_obj_t *parent, int y) {
     lv_obj_t *box = lv_obj_create(parent);
     lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
@@ -97,8 +117,8 @@ static void view_show(view_t v) {
     lv_obj_t *target = v == VIEW_LIST ? s_box_list
                      : v == VIEW_DETAIL ? s_box_detail : s_box_record;
     lv_obj_remove_flag(target, LV_OBJ_FLAG_HIDDEN);
-    lv_label_set_text(s_nav_label, v == VIEW_LIST ? "U/D: select   OK: open"
-                     : v == VIEW_DETAIL ? "U/D: task   OK: record" : "Hold OK: cancel & exit");
+    lv_label_set_text(s_nav_label, v == VIEW_LIST ? "上下选择  确认进入"
+                     : v == VIEW_DETAIL ? "上下阅读  确认录音" : "长按确认取消并返回");
 }
 
 static void list_highlight(void) {
@@ -131,7 +151,7 @@ static void list_rebuild(void) {
         lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
         lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
 
-        lv_obj_t *badge = ui_pixel_label(card, it->status,
+        lv_obj_t *badge = ui_pixel_label(card, status_text(it->status),
                                          &passport_font_14, CHIP_COLORS[tasks_model_chip(it->status)]);
         lv_obj_set_width(badge, 194);
         lv_label_set_long_mode(badge, LV_LABEL_LONG_DOT);
@@ -161,19 +181,38 @@ static void detail_show(void) {
     lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
     lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
 
-    lv_obj_t *status = ui_pixel_label(panel, it->status,
+    lv_obj_t *status = ui_pixel_label(panel, status_text(it->status),
                                       &passport_font_14, CHIP_COLORS[tasks_model_chip(it->status)]);
     lv_obj_set_width(status, 190);
     lv_label_set_long_mode(status, LV_LABEL_LONG_DOT);
     lv_obj_align(status, LV_ALIGN_TOP_LEFT, 0, 23);
 
-    lv_obj_t *msg = ui_pixel_label(panel, it->message, &passport_font_14, 0x3A4A5A);
+    uint32_t token;
+    bool review = tasks_review_token(it->status, &token);
+    bool stale = review && token != s_voice_token;
+    const char *text = s_waiting_send ? "正在发送到原任务" : stale || s_waiting_review ? "正在等待 Cindy 转写" : it->message;
+    lv_obj_t *msg = ui_pixel_label(panel, text, &passport_font_14, 0x3A4A5A);
     lv_obj_set_width(msg, 190);
     lv_obj_set_height(msg, 108);
-    lv_label_set_long_mode(msg, LV_LABEL_LONG_SCROLL);
+    lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
     lv_obj_align(msg, LV_ALIGN_TOP_LEFT, 0, 48);
 
     view_show(VIEW_DETAIL);
+    if (s_waiting_send || s_waiting_review || stale || tasks_detail_action(it->status, 0, s_voice_token) == TASK_BUSY)
+        lv_label_set_text(s_nav_label, "等待结果  长按确认返回");
+    else if (review) lv_label_set_text(s_nav_label, "上重录  下阅读  确认发送");
+}
+
+// The application dispatcher holds the LVGL lock while queueing button actions.
+static void queue_action(cmd_t command) {
+    const task_item_t *it = tasks_model_current(&s_model);
+    if (!it) return;
+    memcpy(s_action_task, it->id, sizeof(s_action_task));
+    uint32_t token;
+    s_action_token = tasks_review_token(it->status, &token) ? s_voice_token : 0;
+    if (command == CMD_CONFIRM) s_waiting_send = true;
+    s_cmd = command;
+    if (s_waiting_send) detail_show();
 }
 
 static void record_show(void) {
@@ -184,7 +223,7 @@ static void record_show(void) {
     lv_obj_set_width(title, 194);
     lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
     lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
-    lv_obj_t *label = ui_pixel_label(panel, "VOICE FEEDBACK", &passport_font_14, UI_RED);
+    lv_obj_t *label = ui_pixel_label(panel, "语音回复", &passport_font_14, UI_RED);
     lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 25);
     s_rec_sec = ui_pixel_label(panel, "0s / 30s", &lv_font_montserrat_20, UI_INK);
     lv_obj_align(s_rec_sec, LV_ALIGN_TOP_MID, 0, 53);
@@ -194,7 +233,7 @@ static void record_show(void) {
     lv_obj_set_style_bg_color(s_rec_bar, lv_color_hex(UI_MUTED), LV_PART_MAIN);
     lv_obj_set_style_bg_color(s_rec_bar, lv_color_hex(UI_GRASS), LV_PART_INDICATOR);
     lv_bar_set_range(s_rec_bar, 0, 100);
-    s_rec_hint = ui_pixel_label(panel, "OK: stop & send", &passport_font_14, UI_SKY_DARK);
+    s_rec_hint = ui_pixel_label(panel, "确认停止并转写", &passport_font_14, UI_SKY_DARK);
     lv_obj_align(s_rec_hint, LV_ALIGN_TOP_MID, 0, 129);
     view_show(VIEW_RECORD);
 }
@@ -281,8 +320,10 @@ static void do_record(void) {
     const task_item_t *it = tasks_model_current(&s_model);
     if (it) strncpy(task_id, it->id, sizeof(task_id) - 1);
     if (!task_id[0]) { bsp_lvgl_unlock(); s_cmd = CMD_NONE; return; }
+    memcpy(s_action_task, task_id, sizeof(s_action_task));
+    s_waiting_review = false; s_waiting_send = false; s_action_error = ESP_OK;
     record_show();
-    lv_label_set_text(s_rec_hint, "Connecting...");
+    lv_label_set_text(s_rec_hint, "准备录音...");
     bsp_lvgl_unlock();
 
     bool inline_voice = s_ble_mode;
@@ -303,6 +344,7 @@ static void do_record(void) {
     }
     if (s_ble_mode) {
         err = passport_voice_open(task_id, &upload.voice);
+        if (err == ESP_OK) s_voice_token = passport_voice_token(upload.voice);
     } else {
         err = esp_wifi_get_ps(&saved_ps);
         if (err != ESP_OK) goto cleanup;
@@ -325,7 +367,7 @@ static void do_record(void) {
     }
     started = true;
     s_recording = true;
-    if (bsp_lvgl_lock(200)) { lv_label_set_text(s_rec_hint, "OK: stop and send"); bsp_lvgl_unlock(); }
+    if (bsp_lvgl_lock(200)) { lv_label_set_text(s_rec_hint, "确认停止并转写"); bsp_lvgl_unlock(); }
     // Keep the 512-byte DMA/read block out of the worker stack. The BLE path
     // calls Opus inline, so every byte left on this stack is part of the codec
     // headroom; the Wi-Fi path still copies the block into its queue.
@@ -373,6 +415,7 @@ static void do_record(void) {
             chunk.bytes = 0;
             err = record_write(&upload, &chunk);
             if (err != ESP_OK) upload.error = err;
+            else s_waiting_review = true;
         }
         upload.abort = !submit;
         passport_voice_close(upload.voice, upload.abort || upload.error != ESP_OK || s_exit);
@@ -432,6 +475,20 @@ static void worker_task(void *arg) {
     if (werr != ESP_OK) ESP_LOGE(TAG, "radio start: %s", esp_err_to_name(werr));
 
     while (!s_exit) {
+        if (s_cmd >= CMD_DETAIL) {
+            char id[TASK_ID_LEN];
+            cmd_t command;
+            uint32_t token;
+            if (!bsp_lvgl_lock(200)) continue;
+            command = s_cmd; token = s_action_token;
+            memcpy(id, s_action_task, sizeof(id)); s_cmd = CMD_NONE;
+            bsp_lvgl_unlock();
+            s_action_error = passport_ble_action((passport_action_t)(command - CMD_DETAIL + PASSPORT_OPEN), id, token);
+            ESP_LOGI(TAG, "device action=%d result=%s", command - CMD_DETAIL + PASSPORT_OPEN, esp_err_to_name(s_action_error));
+            if (s_action_error == ESP_OK && command == CMD_RETRY) s_cmd = CMD_RECORD;
+            if (s_action_error != ESP_OK) s_waiting_send = false;
+        }
+        if (s_exit) break;
         if (s_cmd == CMD_RECORD) {
             do_record();
             last_poll = esp_timer_get_time() / 1000;
@@ -448,7 +505,16 @@ static void worker_task(void *arg) {
                 passport_ble_status(s_line, sizeof(s_line));
                 if (stale) snprintf(s_line, sizeof(s_line), "Cindy sync paused");
                 if (werr != ESP_OK) snprintf(s_line, sizeof(s_line), "BLE start: %s", esp_err_to_name(werr));
+                if (s_action_error != ESP_OK) snprintf(s_line, sizeof(s_line), "操作失败: %s", esp_err_to_name(s_action_error));
+                if (!passport_ble_connected()) { s_waiting_review = false; s_waiting_send = false; }
                 if (changed && tasks_model_set_items(&s_model, items, count)) {
+                    const task_item_t *current = tasks_model_current(&s_model);
+                    uint32_t token;
+                    if (current) {
+                        bool review = tasks_review_token(current->status, &token);
+                        if ((review && token == s_voice_token) || !strncmp(current->status, "error:", 6)) s_waiting_review = false;
+                        if ((!review && strcmp(current->status, "sending")) || !strncmp(current->status, "retry:", 6)) s_waiting_send = false;
+                    }
                     list_rebuild();
                     if (s_view == VIEW_DETAIL) detail_show();
                 }
@@ -483,6 +549,7 @@ static void worker_task(void *arg) {
     // Bluetooth stays up after the page closes so the next visit keeps its
     // pairing and the last snapshot. Only the Wi-Fi bridge is page scoped.
     if (!s_ble_mode) app_wifi_stop();
+    else if (s_action_task[0]) (void)passport_ble_action(PASSPORT_CANCEL, s_action_task, s_voice_token);
     s_worker_running = false;
     vTaskDelete(NULL);
 }
@@ -496,6 +563,8 @@ static void tasks_enter(bool ble) {
     s_exit = false;
     s_cmd = CMD_NONE;
     s_recording = false;
+    s_waiting_review = false; s_waiting_send = false;
+    s_voice_token = 0; s_action_task[0] = 0; s_action_error = ESP_OK;
     s_view = VIEW_LIST;
     snprintf(s_line, sizeof(s_line), "%s", s_ble_mode ? "Starting Bluetooth..." : "Wi-Fi...");
 
@@ -510,7 +579,7 @@ static void tasks_enter(bool ble) {
 
     lv_obj_t *source = ui_pixel_label(s_scr, s_ble_mode ? "Source: Cindy / BLE" : "Source: bridge file", &passport_font_14, UI_INK);
     lv_obj_align(source, LV_ALIGN_TOP_LEFT, 8, 282);
-    s_nav_label = ui_pixel_label(s_scr, "U/D: select   OK: open", &passport_font_14, UI_INK);
+    s_nav_label = ui_pixel_label(s_scr, "上下选择  确认进入", &passport_font_14, UI_INK);
     lv_obj_align(s_nav_label, LV_ALIGN_TOP_LEFT, 8, 299);
 
     s_box_list = make_box(s_scr, 88);
@@ -560,6 +629,23 @@ void demo_tasks_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
         return;
     }
     if (ev == BSP_BTN_CLICK && !s_recording) {
+        if (s_cmd != CMD_NONE) return;
+        if (s_ble_mode && s_view == VIEW_DETAIL) {
+            const task_item_t *it = tasks_model_current(&s_model);
+            uint32_t token;
+            if (!it || s_waiting_review || s_waiting_send ||
+                (tasks_review_token(it->status, &token) && token != s_voice_token)) return;
+            int button = btn == BSP_BTN_UP ? -1 : btn == BSP_BTN_DOWN ? 1 : 0;
+            switch (tasks_detail_action(it->status, button, s_voice_token)) {
+            case TASK_READ_PREVIOUS: queue_action(CMD_PREVIOUS); break;
+            case TASK_READ_NEXT: queue_action(CMD_NEXT); break;
+            case TASK_RECORD_AGAIN: queue_action(CMD_RETRY); break;
+            case TASK_SEND: queue_action(CMD_CONFIRM); break;
+            case TASK_RECORD: s_cmd = CMD_RECORD; break;
+            case TASK_BUSY: break;
+            }
+            return;
+        }
         int delta = btn == BSP_BTN_UP ? -1 : 1;
         if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
             if (s_view == VIEW_LIST) {
@@ -572,6 +658,7 @@ void demo_tasks_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
         } else if (btn == BSP_BTN_OK) {
             if (s_view == VIEW_LIST && s_model.count > 0) {
                 detail_show();
+                if (s_ble_mode) queue_action(CMD_DETAIL);
             } else if (s_view == VIEW_DETAIL) {
                 s_cmd = CMD_RECORD;
             } else if (s_view == VIEW_RECORD && s_cmd == CMD_RECORD) {

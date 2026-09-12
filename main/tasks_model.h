@@ -44,6 +44,10 @@ void tasks_model_move(tasks_model_t *m, int delta);
 const task_item_t *tasks_model_current(const tasks_model_t *m);
 
 task_chip_t tasks_model_chip(const char *status);
+typedef enum { TASK_READ_PREVIOUS, TASK_READ_NEXT, TASK_RECORD, TASK_RECORD_AGAIN, TASK_SEND, TASK_BUSY } task_detail_action_t;
+// button: -1 = up, 0 = OK, 1 = down; independent of the hardware button driver.
+task_detail_action_t tasks_detail_action(const char *status, int button, uint32_t recording_token);
+bool tasks_review_token(const char *status, uint32_t *token);
 
 // 取 message 的第一行；超出 cap-1 字节时按 UTF-8 字符边界截断（省略号交给 LVGL LONG_DOT 渲染）。
 // 返回写入字节数。

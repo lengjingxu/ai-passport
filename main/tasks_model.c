@@ -61,12 +61,39 @@ const task_item_t *tasks_model_current(const tasks_model_t *m) {
 
 task_chip_t tasks_model_chip(const char *status) {
     if (!status) return TASK_CHIP_UNKNOWN;
+    if (!strncmp(status, "draft:", 6)) return TASK_CHIP_WAITING;
+    if (!strncmp(status, "retry:", 6) || !strncmp(status, "error:", 6)) return TASK_CHIP_FAILED;
+    if (!strncmp(status, "asr:", 4) || !strcmp(status, "sending")) return TASK_CHIP_RUNNING;
     if (strcmp(status, "waiting") == 0) return TASK_CHIP_WAITING;
     if (strcmp(status, "queued") == 0) return TASK_CHIP_QUEUED;
     if (strcmp(status, "running") == 0 || strcmp(status, "in_progress") == 0) return TASK_CHIP_RUNNING;
     if (strcmp(status, "done") == 0 || strcmp(status, "completed") == 0) return TASK_CHIP_DONE;
     if (strcmp(status, "failed") == 0 || strcmp(status, "error") == 0) return TASK_CHIP_FAILED;
     return TASK_CHIP_UNKNOWN;
+}
+
+bool tasks_review_token(const char *status, uint32_t *token) {
+    if ((!strncmp(status, "draft:", 6) || !strncmp(status, "retry:", 6)) && strlen(status) == 14) {
+        uint32_t value = 0;
+        for (int i = 6; i < 14; i++) {
+            unsigned char c = status[i];
+            int digit = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
+            if (digit < 0) return false;
+            value = value * 16 + digit;
+        }
+        *token = value; return true;
+    }
+    return false;
+}
+
+task_detail_action_t tasks_detail_action(const char *status, int button, uint32_t recording_token) {
+    if (!strncmp(status, "asr:", 4) || !strcmp(status, "sending")) return TASK_BUSY;
+    uint32_t token;
+    if (tasks_review_token(status, &token)) {
+        if (token != recording_token) return TASK_BUSY;
+        return button < 0 ? TASK_RECORD_AGAIN : button > 0 ? TASK_READ_NEXT : TASK_SEND;
+    }
+    return button < 0 ? TASK_READ_PREVIOUS : button > 0 ? TASK_READ_NEXT : TASK_RECORD;
 }
 
 int tasks_model_preview(const char *message, char *out, size_t cap) {

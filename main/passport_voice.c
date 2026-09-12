@@ -34,6 +34,7 @@ struct passport_voice {
     int16_t pcm[VOICE_FRAME_SAMPLES];
     uint8_t encoded[1275];
 };
+uint32_t passport_voice_token(const passport_voice_t *voice) { return voice->token; }
 static esp_err_t send_packet(passport_voice_t *v, uint8_t kind, const void *data, size_t size)
 {
     uint8_t packet[200] = {kind};

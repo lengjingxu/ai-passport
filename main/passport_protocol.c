@@ -1,6 +1,17 @@
 #include "passport_protocol.h"
 #include <string.h>
 
+int passport_encode_action(passport_action_t action, const char *id, uint32_t token,
+                           unsigned char out[PASSPORT_ACTION_BYTES])
+{
+    if (action < PASSPORT_OPEN || action > PASSPORT_CANCEL || !id || !id[0] || strlen(id) >= TASK_ID_LEN) return -1;
+    memset(out, 0, PASSPORT_ACTION_BYTES);
+    out[0] = 2; out[1] = action;
+    memcpy(out + 2, id, strlen(id));
+    for (int i = 0; i < 4; i++) out[2 + TASK_ID_LEN + i] = token >> (8 * i);
+    return PASSPORT_ACTION_BYTES;
+}
+
 int passport_decode(passport_decoder_t *d, const void *bytes, size_t len,
                     task_item_t *out, int *count)
 {

@@ -56,9 +56,14 @@ static int allocations, closed, submitted, waits, reads, stop_after, stalled, ca
 static size_t sent;
 static int fail_voice_write;
 static atomic_bool s_exit, s_recording;
+static atomic_bool s_waiting_review, s_waiting_send;
+static char s_action_task[TASK_ID_LEN];
+static uint32_t s_voice_token;
+static esp_err_t s_action_error;
 static bool s_ble_mode;
 typedef void passport_voice_t;
 static int passport_voice_open(const char *id, passport_voice_t **out) {(void)id;*out=(void *)1;return 0;}
+static uint32_t passport_voice_token(const passport_voice_t *v) {(void)v;return 5;}
 static int passport_voice_write(passport_voice_t *v, const int16_t *pcm, size_t n) {(void)v;(void)pcm;if (!fail_voice_write) sent += n;return fail_voice_write ? ESP_FAIL : 0;}
 static int passport_voice_finish(passport_voice_t *v) {(void)v;submitted++;return 0;}
 static void passport_voice_close(passport_voice_t *v, bool cancel) {(void)v;(void)cancel;closed++;}

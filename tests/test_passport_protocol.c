@@ -5,6 +5,12 @@
 
 int main(void)
 {
+    unsigned char action[PASSPORT_ACTION_BYTES];
+    assert(passport_encode_action(PASSPORT_CONFIRM, "session-1", 0x12345678, action) == 46);
+    assert(action[0] == 2 && action[1] == 5 && !strcmp((char *)action + 2, "session-1"));
+    assert(action[42] == 0x78 && action[43] == 0x56 && action[44] == 0x34 && action[45] == 0x12);
+    assert(passport_encode_action(0, "session-1", 0, action) == -1);
+    assert(passport_encode_action(PASSPORT_CONFIRM, "", 0, action) == -1);
     unsigned char frame[4 + PASSPORT_ITEM_BYTES] = {0};
     frame[0] = (sizeof(frame) - 2) & 255;
     frame[1] = (sizeof(frame) - 2) >> 8;
