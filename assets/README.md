@@ -34,3 +34,7 @@ Store reusable music and sound-effect sources in `music/`.
 - Prefer 16 kHz, 16-bit mono PCM when it matches the current BSP audio path.
 - Check Flash and internal-RAM cost before embedding audio; stream or chunk long recordings.
 - Do not commit media without redistribution permission.
+
+## Passport font
+
+`fonts/passport_font_14.c` is generated from Noto Sans CJK SC Regular (SIL OFL 1.1, `fonts/OFL.txt`), using lv_font_conv 1.5.3, size 14, 1 bpp, no compression. It covers ASCII, CJK punctuation, Extension A, unified ideographs and fullwidth forms (U+0020–007E, U+3000–303F, U+3400–4DBF, U+4E00–9FFF, U+FF00–FFEF). The const font data stays in Flash; task titles and messages use it directly. Source: https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf

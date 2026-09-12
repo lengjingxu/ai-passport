@@ -35,3 +35,5 @@ void demo_low_power_key(bsp_btn_t btn, bsp_btn_ev_t ev);
 
 void demo_tasks_enter(void);   void demo_tasks_exit(void);
 void demo_tasks_key(bsp_btn_t btn, bsp_btn_ev_t ev);
+
+void demo_tasks_ble_enter(void);

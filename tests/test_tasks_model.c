@@ -51,6 +51,13 @@ int main(void)
     tasks_model_preview("hello world", small, sizeof(small));
     assert(strlen(small) == 9);                                 // 截断到 cap-1
 
+    char chinese[5];
+    tasks_model_preview("中文任务", chinese, sizeof(chinese));
+    assert(strcmp(chinese, "中") == 0);
+    char tiny[3];
+    tasks_model_preview("中文", tiny, sizeof(tiny));
+    assert(tiny[0] == 0);
+
     char big[16];
     tasks_model_preview("hello world and more", big, sizeof(big));
     assert(strncmp(big, "hello", 5) == 0);

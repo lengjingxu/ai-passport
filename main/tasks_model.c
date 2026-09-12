@@ -61,6 +61,7 @@ const task_item_t *tasks_model_current(const tasks_model_t *m) {
 
 task_chip_t tasks_model_chip(const char *status) {
     if (!status) return TASK_CHIP_UNKNOWN;
+    if (strcmp(status, "waiting") == 0) return TASK_CHIP_WAITING;
     if (strcmp(status, "queued") == 0) return TASK_CHIP_QUEUED;
     if (strcmp(status, "running") == 0 || strcmp(status, "in_progress") == 0) return TASK_CHIP_RUNNING;
     if (strcmp(status, "done") == 0 || strcmp(status, "completed") == 0) return TASK_CHIP_DONE;
@@ -74,6 +75,8 @@ int tasks_model_preview(const char *message, char *out, size_t cap) {
     size_t line = 0;
     while (message[line] != 0 && message[line] != '\n') line++;
     size_t n = line < cap - 1 ? line : cap - 1;
+    // Preserve the UTF-8 boundary when the first line exceeds the byte budget.
+    if (n < line) while (n > 0 && ((unsigned char)message[n] & 0xc0) == 0x80) n--;
     memcpy(out, message, n);
     out[n] = 0;
     return (int)n;

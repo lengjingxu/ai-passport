@@ -32,3 +32,7 @@
 - 与当前 BSP 音频路径匹配时优先采用 16 kHz、16 位单声道 PCM。
 - 嵌入音频前评估 Flash 与内部 RAM 成本；长录音应流式或分块。
 - 无再分发许可不提交媒体文件。
+
+## Passport 字库
+
+`fonts/passport_font_14.c` 来自 Noto Sans CJK SC Regular（SIL OFL 1.1，见 `fonts/OFL.txt`），由 lv_font_conv 1.5.3 生成，14 像素、1 bpp、不压缩。覆盖 ASCII、中日韩标点、扩展 A、统一汉字及全角字符（U+0020–007E、U+3000–303F、U+3400–4DBF、U+4E00–9FFF、U+FF00–FFEF）。常量字库保存在 Flash，任务标题与正文直接使用。来源：https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf

@@ -3,10 +3,12 @@
 // 按键(页面内)：UP/DOWN 移动选中或切换任务；OK 短按 进详情 / 开始录音 / 停止并发送；
 // OK 长按由 main.c 统一返回菜单，录音中返回即放弃本次录音。
 // 16kHz/16bit/mono PCM streams through a bounded queue to the bridge (maximum 30s).
-// 屏幕字体不含中文字形，界面文案一律英文。
+// Task text uses a Flash-resident Noto CJK bitmap font.
 #include "demo.h"
 #include "app_wifi.h"
 #include "tasks_client.h"
+#include "passport_ble.h"
+#include "passport_voice.h"
 #include "tasks_model.h"
 #include "ui_pixel.h"
 
@@ -16,12 +18,14 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_wifi.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "lvgl.h"
+LV_FONT_DECLARE(passport_font_14);
 
 #include <stdio.h>
 #include <string.h>
@@ -32,6 +36,7 @@
 #define REC_MAX_BYTES   (30 * REC_BPS)
 #define POLL_PERIOD_MS  3000
 #define WORKER_TICK_MS  150
+#define TASKS_WORKER_STACK_BYTES 28672
 
 typedef enum { VIEW_LIST = 0, VIEW_DETAIL, VIEW_RECORD } view_t;
 typedef enum { CMD_NONE = 0, CMD_RECORD, CMD_STOP_SEND } cmd_t;
@@ -45,20 +50,31 @@ static atomic_bool s_recording;
 
 static tasks_model_t s_model;
 static view_t s_view;
+static bool s_ble_mode;
+static bool s_model_ble;                // current list came from Bluetooth
 static char s_line[96];                 // 屏幕右上角状态行（IP / 错误）
 
 static lv_obj_t *s_scr;
 static lv_obj_t *s_line_label;
 static lv_obj_t *s_battery_label;
+static lv_obj_t *s_nav_label;
 static lv_obj_t *s_box_list, *s_box_detail, *s_box_record;
 static lv_obj_t *s_cards[TASKS_MODEL_MAX];
 static lv_obj_t *s_rec_sec, *s_rec_bar, *s_rec_hint;
 
+// The Opus encoder needs one large contiguous heap allocation. Keep the
+// page worker stack in static RAM so creating the worker cannot split that
+// heap block on the no-PSRAM C3.
+static StackType_t s_worker_stack[TASKS_WORKER_STACK_BYTES]
+    __attribute__((aligned(portBYTE_ALIGNMENT)));
+static StaticTask_t s_worker_tcb;
+
 static const uint32_t CHIP_COLORS[] = {
     [TASK_CHIP_QUEUED]  = 0x78909C,
-    [TASK_CHIP_RUNNING] = UI_YELLOW,
+    [TASK_CHIP_RUNNING] = UI_SKY_DARK,
     [TASK_CHIP_DONE]    = UI_GRASS,
     [TASK_CHIP_FAILED]  = UI_RED,
+    [TASK_CHIP_WAITING] = UI_ORANGE,
     [TASK_CHIP_UNKNOWN] = 0x78909C,
 };
 
@@ -66,7 +82,7 @@ static lv_obj_t *make_box(lv_obj_t *parent, int y) {
     lv_obj_t *box = lv_obj_create(parent);
     lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_pos(box, 0, y);
-    lv_obj_set_size(box, 240, 320 - y);
+    lv_obj_set_size(box, 240, 194);
     lv_obj_set_style_bg_opa(box, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(box, 0, 0);
     lv_obj_set_style_pad_all(box, 0, 0);
@@ -81,6 +97,8 @@ static void view_show(view_t v) {
     lv_obj_t *target = v == VIEW_LIST ? s_box_list
                      : v == VIEW_DETAIL ? s_box_detail : s_box_record;
     lv_obj_remove_flag(target, LV_OBJ_FLAG_HIDDEN);
+    lv_label_set_text(s_nav_label, v == VIEW_LIST ? "U/D: select   OK: open"
+                     : v == VIEW_DETAIL ? "U/D: task   OK: record" : "Hold OK: cancel & exit");
 }
 
 static void list_highlight(void) {
@@ -97,28 +115,32 @@ static void list_rebuild(void) {
     for (int i = 0; i < TASKS_MODEL_MAX; i++) s_cards[i] = NULL;
 
     if (s_model.count == 0) {
-        lv_obj_t *empty = ui_pixel_label(s_box_list, "No tasks yet",
-                                         &lv_font_montserrat_14, 0x5A6B7A);
-        lv_obj_center(empty);
+        lv_obj_t *empty = ui_pixel_label(s_box_list, s_ble_mode ? "No tasks yet\nWaiting for Cindy" : "No tasks yet\nWaiting for bridge",
+                                         &passport_font_14, 0x5A6B7A);
+        lv_obj_set_style_text_align(empty, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(empty, LV_ALIGN_TOP_MID, 0, 110);
+        ui_pixel_mascot_create(s_box_list, 101, 44);
         return;
     }
     for (int i = 0; i < s_model.count; i++) {
         const task_item_t *it = &s_model.items[i];
-        lv_obj_t *card = ui_pixel_panel_create(s_box_list, 12, 6 + i * 60, 216, 54, UI_PAPER);
+        lv_obj_t *card = ui_pixel_panel_create(s_box_list, 12, 6 + i * 88, 216, 80, UI_PAPER);
 
-        lv_obj_t *title = ui_pixel_label(card, it->title, &lv_font_montserrat_14, UI_INK);
-        lv_obj_set_width(title, 128);
+        lv_obj_t *title = ui_pixel_label(card, it->title, &passport_font_14, UI_INK);
+        lv_obj_set_width(title, 194);
         lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
         lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
 
         lv_obj_t *badge = ui_pixel_label(card, it->status,
-                                         &lv_font_montserrat_14, CHIP_COLORS[tasks_model_chip(it->status)]);
-        lv_obj_align(badge, LV_ALIGN_TOP_RIGHT, 0, 0);
+                                         &passport_font_14, CHIP_COLORS[tasks_model_chip(it->status)]);
+        lv_obj_set_width(badge, 194);
+        lv_label_set_long_mode(badge, LV_LABEL_LONG_DOT);
+        lv_obj_align(badge, LV_ALIGN_TOP_LEFT, 0, 20);
 
         char prev[64];
         tasks_model_preview(it->message, prev, sizeof(prev));
-        lv_obj_t *msg = ui_pixel_label(card, prev, &lv_font_montserrat_14, 0x5A6B7A);
-        lv_obj_set_width(msg, 200);
+        lv_obj_t *msg = ui_pixel_label(card, prev, &passport_font_14, 0x5A6B7A);
+        lv_obj_set_width(msg, 194);
         lv_label_set_long_mode(msg, LV_LABEL_LONG_DOT);
         lv_obj_align(msg, LV_ALIGN_BOTTOM_LEFT, 0, 0);
 
@@ -132,55 +154,53 @@ static void detail_show(void) {
     if (!it) { view_show(VIEW_LIST); return; }
 
     lv_obj_clean(s_box_detail);
-    lv_obj_t *panel = ui_pixel_panel_create(s_box_detail, 12, 6, 216, 214, UI_PAPER);
+    lv_obj_t *panel = ui_pixel_panel_create(s_box_detail, 12, 6, 216, 182, UI_PAPER);
 
-    lv_obj_t *title = ui_pixel_label(panel, it->title, &lv_font_montserrat_14, UI_INK);
+    lv_obj_t *title = ui_pixel_label(panel, it->title, &passport_font_14, UI_INK);
     lv_obj_set_width(title, 190);
     lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
     lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
 
     lv_obj_t *status = ui_pixel_label(panel, it->status,
-                                      &lv_font_montserrat_14, CHIP_COLORS[tasks_model_chip(it->status)]);
-    lv_obj_align(status, LV_ALIGN_TOP_RIGHT, 0, 0);
+                                      &passport_font_14, CHIP_COLORS[tasks_model_chip(it->status)]);
+    lv_obj_set_width(status, 190);
+    lv_label_set_long_mode(status, LV_LABEL_LONG_DOT);
+    lv_obj_align(status, LV_ALIGN_TOP_LEFT, 0, 23);
 
-    lv_obj_t *msg = ui_pixel_label(panel, it->message, &lv_font_montserrat_14, 0x3A4A5A);
+    lv_obj_t *msg = ui_pixel_label(panel, it->message, &passport_font_14, 0x3A4A5A);
     lv_obj_set_width(msg, 190);
-    lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
-    lv_obj_align(msg, LV_ALIGN_TOP_LEFT, 0, 26);
+    lv_obj_set_height(msg, 108);
+    lv_label_set_long_mode(msg, LV_LABEL_LONG_SCROLL);
+    lv_obj_align(msg, LV_ALIGN_TOP_LEFT, 0, 48);
 
-    lv_obj_t *hint = ui_pixel_label(panel, "OK: record  U/D: switch",
-                                    &lv_font_montserrat_14, UI_SKY_DARK);
-    lv_obj_align(hint, LV_ALIGN_BOTTOM_LEFT, 0, 0);
     view_show(VIEW_DETAIL);
 }
 
 static void record_show(void) {
     lv_obj_clean(s_box_record);
-    s_rec_sec = ui_pixel_label(s_box_record, "0s", &lv_font_montserrat_20, UI_INK);
-    lv_obj_align(s_rec_sec, LV_ALIGN_TOP_MID, 0, 40);
-
-    s_rec_bar = lv_bar_create(s_box_record);
-    lv_obj_set_size(s_rec_bar, 200, 14);
-    lv_obj_align(s_rec_bar, LV_ALIGN_TOP_MID, 0, 90);
+    lv_obj_t *panel = ui_pixel_panel_create(s_box_record, 12, 6, 216, 182, UI_PAPER);
+    const task_item_t *it = tasks_model_current(&s_model);
+    lv_obj_t *title = ui_pixel_label(panel, it ? it->title : "", &passport_font_14, UI_INK);
+    lv_obj_set_width(title, 194);
+    lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_t *label = ui_pixel_label(panel, "VOICE FEEDBACK", &passport_font_14, UI_RED);
+    lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 25);
+    s_rec_sec = ui_pixel_label(panel, "0s / 30s", &lv_font_montserrat_20, UI_INK);
+    lv_obj_align(s_rec_sec, LV_ALIGN_TOP_MID, 0, 53);
+    s_rec_bar = lv_bar_create(panel);
+    lv_obj_set_size(s_rec_bar, 190, 14);
+    lv_obj_align(s_rec_bar, LV_ALIGN_TOP_MID, 0, 91);
+    lv_obj_set_style_bg_color(s_rec_bar, lv_color_hex(UI_MUTED), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_rec_bar, lv_color_hex(UI_GRASS), LV_PART_INDICATOR);
     lv_bar_set_range(s_rec_bar, 0, 100);
-
-    s_rec_hint = ui_pixel_label(s_box_record, "OK: stop & send", &lv_font_montserrat_14, UI_SKY_DARK);
-    lv_obj_align(s_rec_hint, LV_ALIGN_TOP_MID, 0, 140);
+    s_rec_hint = ui_pixel_label(panel, "OK: stop & send", &passport_font_14, UI_SKY_DARK);
+    lv_obj_align(s_rec_hint, LV_ALIGN_TOP_MID, 0, 129);
     view_show(VIEW_RECORD);
 }
 
 static void status_refresh(void) {
     if (s_line_label) lv_label_set_text(s_line_label, s_line);
-}
-
-static void ip_text(char *out, size_t cap) {
-    esp_netif_t *netif = esp_netif_get_default_netif();
-    esp_netif_ip_info_t info;
-    if (!netif || esp_netif_get_ip_info(netif, &info) != ESP_OK || info.ip.addr == 0) {
-        snprintf(out, cap, "Wi-Fi...");
-        return;
-    }
-    snprintf(out, cap, "WiFi " IPSTR, IP2STR(&info.ip));
 }
 
 static void do_poll(void) {
@@ -194,9 +214,7 @@ static void do_poll(void) {
     }
 
     if (err == ESP_OK) {
-        char ip[32];
-        ip_text(ip, sizeof(ip));
-        snprintf(s_line, sizeof(s_line), "%s  tasks:%d", ip, count);
+        snprintf(s_line, sizeof(s_line), "Bridge connected | %d tasks", count);
         if (tasks_model_set_items(&s_model, items, count)) {
             list_rebuild();
             if (s_view == VIEW_DETAIL) detail_show();
@@ -217,9 +235,25 @@ typedef struct {
     QueueHandle_t queue;
     SemaphoreHandle_t done;
     esp_http_client_handle_t client;
+    passport_voice_t *voice;
     atomic_bool abort;
     atomic_int error;
+    size_t sent_bytes;
+    uint32_t max_write_ms;
 } record_upload_t;
+
+static esp_err_t record_write(record_upload_t *upload, const record_chunk_t *chunk) {
+    int64_t started_us = esp_timer_get_time();
+    esp_err_t err = upload->voice
+        ? (chunk->bytes ? passport_voice_write(upload->voice, chunk->pcm, chunk->bytes)
+                        : passport_voice_finish(upload->voice))
+        : (chunk->bytes ? tasks_feedback_write(upload->client, chunk->pcm, chunk->bytes)
+                        : tasks_feedback_finish(upload->client));
+    uint32_t elapsed_ms = (esp_timer_get_time() - started_us) / 1000;
+    if (elapsed_ms > upload->max_write_ms) upload->max_write_ms = elapsed_ms;
+    if (err == ESP_OK) upload->sent_bytes += chunk->bytes;
+    return err;
+}
 
 static void upload_recording(void *arg) {
     record_upload_t *upload = arg;
@@ -227,12 +261,15 @@ static void upload_recording(void *arg) {
     while (!upload->abort && !s_exit) {
         if (!xQueueReceive(upload->queue, &chunk, pdMS_TO_TICKS(50))) continue;
         if (upload->abort || s_exit) break;
-        esp_err_t err = chunk.bytes ? tasks_feedback_write(upload->client, chunk.pcm, chunk.bytes)
-                                   : tasks_feedback_finish(upload->client);
-        if (err != ESP_OK) upload->error = err;
+        esp_err_t err = record_write(upload, &chunk);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "record upload %s failed: %s", chunk.bytes ? "write" : "finish", esp_err_to_name(err));
+            upload->error = err;
+        }
         if (err != ESP_OK || !chunk.bytes) break;
     }
-    esp_http_client_cleanup(upload->client);
+    if (upload->voice) passport_voice_close(upload->voice, upload->abort || s_exit || upload->error != ESP_OK);
+    if (upload->client) esp_http_client_cleanup(upload->client);
     // No access to caller-owned state after signalling completion.
     xSemaphoreGive(upload->done);
     vTaskDelete(NULL);
@@ -248,34 +285,74 @@ static void do_record(void) {
     lv_label_set_text(s_rec_hint, "Connecting...");
     bsp_lvgl_unlock();
 
-    ESP_LOGI(TAG, "record start: free=%u largest=%u queue=8x512",
+    bool inline_voice = s_ble_mode;
+    ESP_LOGI(TAG, "record start: free=%u largest=%u queue=%s",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+             inline_voice ? "inline" : "8x512");
     record_upload_t upload = {0};
     bool started = false;
+    bool restore_wifi = false;
+    wifi_ps_type_t saved_ps = WIFI_PS_NONE;
     size_t fill = 0;
     esp_err_t err = ESP_ERR_NO_MEM;
-    upload.queue = xQueueCreate(8, sizeof(record_chunk_t));
-    upload.done = xSemaphoreCreateBinary();
-    if (!upload.queue || !upload.done) goto cleanup;
-    err = tasks_feedback_open(task_id, &upload.client);
+    if (!inline_voice) {
+        upload.queue = xQueueCreate(8, sizeof(record_chunk_t));
+        upload.done = xSemaphoreCreateBinary();
+        if (!upload.queue || !upload.done) goto cleanup;
+    }
+    if (s_ble_mode) {
+        err = passport_voice_open(task_id, &upload.voice);
+    } else {
+        err = esp_wifi_get_ps(&saved_ps);
+        if (err != ESP_OK) goto cleanup;
+        err = esp_wifi_set_ps(WIFI_PS_NONE);
+        if (err != ESP_OK) goto cleanup;
+        restore_wifi = true;
+        err = tasks_feedback_open(task_id, &upload.client);
+    }
     if (err != ESP_OK) goto cleanup;
     err = bsp_audio_set_format(REC_HZ, 16, 1);
     if (err != ESP_OK) goto cleanup;
-    if (xTaskCreate(upload_recording, "record_upload", 4096, &upload, 4, NULL) != pdPASS) {
-        err = ESP_ERR_NO_MEM;
-        goto cleanup;
+    if (!inline_voice) {
+        if (xTaskCreate(upload_recording, "record_upload", 4096, &upload, 4, NULL) != pdPASS) {
+            err = ESP_ERR_NO_MEM;
+            ESP_LOGE(TAG, "record uploader task alloc failed: free=%u largest=%u",
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+            goto cleanup;
+        }
     }
     started = true;
     s_recording = true;
     if (bsp_lvgl_lock(200)) { lv_label_set_text(s_rec_hint, "OK: stop and send"); bsp_lvgl_unlock(); }
-    record_chunk_t chunk = { .bytes = sizeof(chunk.pcm) };
+    // Keep the 512-byte DMA/read block out of the worker stack. The BLE path
+    // calls Opus inline, so every byte left on this stack is part of the codec
+    // headroom; the Wi-Fi path still copies the block into its queue.
+    static record_chunk_t chunk;
+    chunk.bytes = sizeof(chunk.pcm);
     while (!s_exit && s_cmd == CMD_RECORD && fill < REC_MAX_BYTES) {
         if (upload.error != ESP_OK) { err = upload.error; break; }
         chunk.bytes = REC_MAX_BYTES - fill < sizeof(chunk.pcm) ? REC_MAX_BYTES - fill : sizeof(chunk.pcm);
         err = bsp_audio_read(chunk.pcm, chunk.bytes);
         if (err != ESP_OK) break;
-        if (!xQueueSend(upload.queue, &chunk, 0)) { err = ESP_ERR_TIMEOUT; break; }
+        if (inline_voice) {
+            // The C3 has no PSRAM. Run the Opus call on this already-sized worker
+            // stack so the encoder does not need a second 16 KB task stack.
+            err = record_write(&upload, &chunk);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "record upload write failed: %s", esp_err_to_name(err));
+                break;
+            }
+        } else {
+            // A buffered microphone burst can fill the queue before the lower-priority
+            // uploader runs. Waiting yields to it; sustained congestion still aborts.
+            if (!xQueueSend(upload.queue, &chunk, pdMS_TO_TICKS(20))) {
+                ESP_LOGE(TAG, "record queue full after 20ms: captured=%u", (unsigned)fill);
+                err = ESP_ERR_TIMEOUT;
+                break;
+            }
+        }
         fill += chunk.bytes;
         if (fill % 4096 == 0 && bsp_lvgl_lock(10)) {
             int peak = 0;
@@ -290,7 +367,17 @@ static void do_record(void) {
     }
     bool submit = err == ESP_OK && !s_exit && fill &&
                   (s_cmd == CMD_STOP_SEND || fill == REC_MAX_BYTES);
-    if (submit) {
+    if (inline_voice) {
+        if (submit) {
+            if (bsp_lvgl_lock(100)) { lv_label_set_text(s_rec_hint, "Sending..."); bsp_lvgl_unlock(); }
+            chunk.bytes = 0;
+            err = record_write(&upload, &chunk);
+            if (err != ESP_OK) upload.error = err;
+        }
+        upload.abort = !submit;
+        passport_voice_close(upload.voice, upload.abort || upload.error != ESP_OK || s_exit);
+        upload.voice = NULL;
+    } else if (submit) {
         if (bsp_lvgl_lock(100)) { lv_label_set_text(s_rec_hint, "Sending..."); bsp_lvgl_unlock(); }
         chunk.bytes = 0;
         // Keep cancellation responsive while the sender drains its bounded queue.
@@ -298,21 +385,36 @@ static void do_record(void) {
             if (s_exit || upload.error != ESP_OK) { submit = false; break; }
         }
     }
-    upload.abort = !submit;
-    xSemaphoreTake(upload.done, portMAX_DELAY);
-    if (upload.error != ESP_OK) err = upload.error;
+    if (!inline_voice) {
+        upload.abort = !submit;
+        xSemaphoreTake(upload.done, portMAX_DELAY);
+        if (upload.error != ESP_OK) err = upload.error;
+    }
 cleanup:
+    if (!started && upload.voice) passport_voice_close(upload.voice, true);
     if (!started && upload.client) esp_http_client_cleanup(upload.client);
     if (upload.queue) vQueueDelete(upload.queue);
     if (upload.done) vSemaphoreDelete(upload.done);
+    if (restore_wifi) {
+        esp_err_t restore_err = esp_wifi_set_ps(saved_ps);
+        if (restore_err != ESP_OK) {
+            ESP_LOGE(TAG, "record Wi-Fi restore failed: %s", esp_err_to_name(restore_err));
+            if (err == ESP_OK) err = restore_err;
+        }
+    }
     s_cmd = CMD_NONE;
     s_recording = false;
-    ESP_LOGI(TAG, "record end: bytes=%u result=%s free=%u largest=%u", (unsigned)fill,
-             esp_err_to_name(err), (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+    ESP_LOGI(TAG, "record stack free minimum=%u", (unsigned)uxTaskGetStackHighWaterMark(NULL));
+    ESP_LOGI(TAG, "record end: captured=%u sent=%u max_write_ms=%u result=%s free=%u largest=%u",
+             (unsigned)fill, (unsigned)upload.sent_bytes, (unsigned)upload.max_write_ms, esp_err_to_name(err), (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
     if (!s_exit && bsp_lvgl_lock(500)) {
         snprintf(s_line, sizeof(s_line), err == ESP_OK ? (fill ? "Recording submitted" : "Recording cancelled")
                                                      : "Record failed: %s", esp_err_to_name(err));
+        if (err == ESP_ERR_TIMEOUT) {
+            snprintf(s_line, sizeof(s_line), "ESP_ERR_TIMEOUT\n%uB / %ums",
+                     (unsigned)upload.sent_bytes, (unsigned)upload.max_write_ms);
+        }
         detail_show();
         status_refresh();
         bsp_lvgl_unlock();
@@ -322,11 +424,39 @@ cleanup:
 static void worker_task(void *arg) {
     (void)arg;
     int64_t last_poll = 0;
-    esp_err_t werr = app_wifi_start();
-    if (werr != ESP_OK) ESP_LOGE(TAG, "wifi start: %s", esp_err_to_name(werr));
+    // Give a preserved list one heartbeat window after page re-entry. If the
+    // queue has no pending snapshot yet, do not expire it immediately because
+    // the Mac heartbeat is sent on its own 5-second cadence.
+    int64_t last_ble_snapshot = esp_timer_get_time() / 1000;
+    esp_err_t werr = s_ble_mode ? passport_ble_start() : app_wifi_start();
+    if (werr != ESP_OK) ESP_LOGE(TAG, "radio start: %s", esp_err_to_name(werr));
 
     while (!s_exit) {
         if (s_cmd == CMD_RECORD) {
+            do_record();
+            last_poll = esp_timer_get_time() / 1000;
+        } else if (s_ble_mode) {
+            task_item_t items[TASKS_MODEL_MAX];
+            int count;
+            bool changed = passport_ble_snapshot(items, &count);
+            int64_t now = esp_timer_get_time() / 1000;
+            if (changed) last_ble_snapshot = now;
+            bool stale = passport_ble_connected() && now - last_ble_snapshot > 10000;
+            if (stale) { count = 0; changed = true; }
+            int battery = bsp_battery_soc();
+            if (bsp_lvgl_lock(200)) {
+                passport_ble_status(s_line, sizeof(s_line));
+                if (stale) snprintf(s_line, sizeof(s_line), "Cindy sync paused");
+                if (werr != ESP_OK) snprintf(s_line, sizeof(s_line), "BLE start: %s", esp_err_to_name(werr));
+                if (changed && tasks_model_set_items(&s_model, items, count)) {
+                    list_rebuild();
+                    if (s_view == VIEW_DETAIL) detail_show();
+                }
+                if (battery >= 0) lv_label_set_text_fmt(s_battery_label, "%d%%", battery);
+                status_refresh();
+                bsp_lvgl_unlock();
+            }
+        } else if (s_cmd == CMD_RECORD) {
             do_record();
             last_poll = esp_timer_get_time() / 1000;
         } else if (!s_recording) {
@@ -350,26 +480,38 @@ static void worker_task(void *arg) {
         }
         vTaskDelay(pdMS_TO_TICKS(WORKER_TICK_MS));
     }
-    app_wifi_stop();
+    // Bluetooth stays up after the page closes so the next visit keeps its
+    // pairing and the last snapshot. Only the Wi-Fi bridge is page scoped.
+    if (!s_ble_mode) app_wifi_stop();
     s_worker_running = false;
     vTaskDelete(NULL);
 }
 
-void demo_tasks_enter(void) {
-    tasks_model_init(&s_model);
+static void tasks_enter(bool ble) {
+    // Re-entering the Bluetooth page keeps the last received list on screen
+    // until the client pushes a fresh snapshot.
+    if (!(ble && s_model_ble)) tasks_model_init(&s_model);
+    s_ble_mode = ble;
+    s_model_ble = ble;
     s_exit = false;
     s_cmd = CMD_NONE;
     s_recording = false;
     s_view = VIEW_LIST;
-    snprintf(s_line, sizeof(s_line), "Wi-Fi...");
+    snprintf(s_line, sizeof(s_line), "%s", s_ble_mode ? "Starting Bluetooth..." : "Wi-Fi...");
 
     s_scr = ui_pixel_screen_create("CINDY");
-    s_line_label = ui_pixel_label(s_scr, s_line, &lv_font_montserrat_14, UI_SKY_DARK);
+    s_line_label = ui_pixel_label(s_scr, s_line, &passport_font_14, UI_INK);
     lv_obj_set_width(s_line_label, 224);
-    lv_label_set_long_mode(s_line_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_height(s_line_label, 36);
+    lv_label_set_long_mode(s_line_label, LV_LABEL_LONG_DOT);
     lv_obj_align(s_line_label, LV_ALIGN_TOP_LEFT, 8, 46);
-    s_battery_label = ui_pixel_label(s_scr, "--%", &lv_font_montserrat_14, UI_INK);
+    s_battery_label = ui_pixel_label(s_scr, "--%", &passport_font_14, UI_INK);
     lv_obj_align(s_battery_label, LV_ALIGN_TOP_RIGHT, -8, 25);
+
+    lv_obj_t *source = ui_pixel_label(s_scr, s_ble_mode ? "Source: Cindy / BLE" : "Source: bridge file", &passport_font_14, UI_INK);
+    lv_obj_align(source, LV_ALIGN_TOP_LEFT, 8, 282);
+    s_nav_label = ui_pixel_label(s_scr, "U/D: select   OK: open", &passport_font_14, UI_INK);
+    lv_obj_align(s_nav_label, LV_ALIGN_TOP_LEFT, 8, 299);
 
     s_box_list = make_box(s_scr, 88);
     lv_obj_add_flag(s_box_list, LV_OBJ_FLAG_SCROLLABLE);
@@ -382,7 +524,10 @@ void demo_tasks_enter(void) {
     list_rebuild();
 
     s_worker_running = true;
-    if (xTaskCreate(worker_task, "tasks_work", 8192, NULL, 5, NULL) != pdPASS) {
+    // Opus encoding runs inline on BLE recordings. Keep one larger worker stack
+    // instead of allocating a second uploader stack on the no-PSRAM C3.
+    if (!xTaskCreateStatic(worker_task, "tasks_work", TASKS_WORKER_STACK_BYTES,
+                           NULL, 5, s_worker_stack, &s_worker_tcb)) {
         s_worker_running = false;
         snprintf(s_line, sizeof(s_line), "Task worker: no memory");
         status_refresh();
@@ -402,6 +547,7 @@ void demo_tasks_exit(void) {
     s_scr = NULL;
     s_line_label = NULL;
     s_battery_label = NULL;
+    s_nav_label = NULL;
     s_box_list = s_box_detail = s_box_record = NULL;
     s_rec_sec = s_rec_bar = s_rec_hint = NULL;
     for (int i = 0; i < TASKS_MODEL_MAX; i++) s_cards[i] = NULL;
@@ -434,3 +580,6 @@ void demo_tasks_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
         }
     }
 }
+
+void demo_tasks_enter(void) { tasks_enter(false); }
+void demo_tasks_ble_enter(void) { tasks_enter(true); }

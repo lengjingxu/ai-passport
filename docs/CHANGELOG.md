@@ -6,6 +6,24 @@
 
 ## Unreleased
 
+- Reduce the LVGL pool to 32 KB after measuring the Chinese task and recording pages, leaving contiguous heap for Opus initialization on ESP32-C3.
+
+- Keep the stored bond when link encryption fails or times out, and drop it only for an encrypted but unauthenticated just-works link, so one failed reconnection no longer leaves the Mac holding pairing material the device has discarded. Log BLE connect, disconnect and security state.
+
+- Keep the Bluetooth link and the last received task list after the Tasks page closes, so leaving and re-entering the page no longer drops the pairing or empties the list.
+
+- Use 40 ms Opus frames with variable payload lengths for BLE voice feedback. The shorter encoder frame reduces the ESP32-C3 recording stack peak while the client keeps complete Ogg timing and bounded packet counts.
+
+- Render task text with a Flash-resident Noto CJK font and preserve UTF-8 truncation boundaries. Size the LVGL pool for the eight-card task view. Start bounded Opus recording within the ESP32-C3 heap budget and send it over authenticated BLE indications to the matching Cindy transcription adapter. Completed-task retention is provided by the desktop adapter.
+
+- Add an opt-in Cindy BLE task mode with authenticated passkey pairing, atomic bounded snapshots, waiting-state color, stale-state clearing and task-ID button actions. Requires the matching macOS Cindy adapter.
+
+- Rework Cindy task cards and details to separate titles, status and bounded scrolling messages; keep navigation and bridge-file provenance visible, and show the target task while recording. Preserve the pixel theme and existing button controls.
+
+- Use Wi-Fi performance mode only during recording and restore the previous mode on exit; disable TCP small-packet coalescing for PCM uploads and log transmitted bytes and maximum write time.
+
+- Fixed false recording queue timeouts during buffered microphone bursts by allowing a bounded 20 ms wait for the uploader; added controller regressions and explicit task-source/upload-interruption logs.
+
 - Replaced whole-recording RAM allocation with bounded PCM streaming (30-second limit); reject incomplete uploads and report recording memory/transport failures. Update the local bridge together with the firmware.
 
 - Fixed Cindy Tasks station/DHCP ownership, connection diagnostics, page shutdown, recording stop/send, list scrolling and detail refresh; added station lifecycle regression tests.
