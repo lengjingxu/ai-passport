@@ -52,3 +52,8 @@ bool tasks_review_token(const char *status, uint32_t *token);
 // 取 message 的第一行；超出 cap-1 字节时按 UTF-8 字符边界截断（省略号交给 LVGL LONG_DOT 渲染）。
 // 返回写入字节数。
 int tasks_model_preview(const char *message, char *out, size_t cap);
+
+// Home navigation is independent of transport and LVGL. Sending is committed.
+typedef enum { TASK_HOME_STAY, TASK_HOME_CANCEL_RECORDING, TASK_HOME_RETURN } task_home_action_t;
+task_home_action_t tasks_home_action(bool recording, bool command_pending, bool sending);
+const char *tasks_home_hint(bool connected, bool stale);

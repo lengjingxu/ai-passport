@@ -55,7 +55,10 @@ static void *upload_arg;
 static int allocations, closed, submitted, waits, reads, stop_after, stalled, cancel;
 static size_t sent;
 static int fail_voice_write;
-static atomic_bool s_exit, s_recording;
+static atomic_bool s_exit, s_recording, s_cancel_record;
+static int home_returns;
+#define VIEW_LIST 0
+static void view_show(int view) {assert(view == VIEW_LIST); home_returns++;}
 static atomic_bool s_waiting_review, s_waiting_send;
 static char s_action_task[TASK_ID_LEN];
 static uint32_t s_voice_token;
@@ -86,7 +89,8 @@ static int bsp_audio_set_format(int hz, int bits, int ch) { assert(hz==16000 && 
 static int bsp_audio_read(void *pcm, size_t bytes) {
     memset(pcm, 42, bytes);
     if (++reads == stop_after) {
-        if (cancel) s_exit = true;
+        if (cancel == 2) s_cancel_record = true;
+        else if (cancel) s_exit = true;
         else s_cmd = CMD_STOP_SEND;
     }
     return ESP_OK;
@@ -136,7 +140,7 @@ static void xSemaphoreTake(void *s, int ticks) {
     else esp_http_client_cleanup(upload->client);
 }
 static void reset(int chunks, int blocked, int cancelled) {
-    s_exit=false;s_recording=false;s_cmd=CMD_RECORD;
+    s_exit=false;s_recording=false;s_cancel_record=false;s_cmd=CMD_RECORD;home_returns=0;
     assert(wifi_ps == 1); fail_wifi=fail_open=0;
     closed=submitted=waits=reads=0;sent=0;stop_after=chunks;stalled=blocked;cancel=cancelled;fail_voice_write=0;
 }
@@ -164,6 +168,9 @@ int main(void) {
     assert(submitted == 1 && sent == 12 * 512 && !allocations && closed == 1);
     reset(12, 0, 1); do_record();
     assert(submitted == 0 && !allocations && closed == 1);
+    reset(12, 0, 2); do_record();
+    assert(submitted == 0 && !s_exit && home_returns == 1 && closed == 1);
+    assert(!s_cancel_record && !allocations);
     reset(12, 0, 0); fail_voice_write=1; do_record();
     assert(submitted == 0 && !allocations && closed == 1);
     puts("Recording queue: PASS (bursts, congestion, cancellation, limit, repeated cleanup)");

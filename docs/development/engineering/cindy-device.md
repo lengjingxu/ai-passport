@@ -12,9 +12,9 @@ Xiaozhi uses Noto font assets, including binary-font loading and optional pushed
 
 ## Bluetooth interaction
 
-Use the matching Cindy macOS client: Settings → Shortcuts → Accessories → Cindy Passport. Enable it, open **Cindy BLE** on the device, select the discovered identifier, and enter the device's displayed code if macOS requests pairing. Permission and connection states are visible. No IP address or HTTP bridge is required. The menu-bar control also remains available.
+Use the matching Cindy macOS client: Settings → Shortcuts → Accessories → Cindy Passport. Enable it, power on the device to enter Cindy directly, select the discovered identifier, and enter the device's displayed code if macOS requests pairing. Permission and connection states are visible. No IP address or HTTP bridge is required. The menu-bar control also remains available.
 
-UP/DOWN selects a task in the status list; OK opens its details. In details, UP/DOWN pages through Cindy's latest visible reply and OK starts recording. Another OK stops for transcription; 30 seconds stops automatically. The device then previews the transcript: UP discards it and records again, DOWN cycles review pages, and OK confirms sending it to the original task. Holding OK exits and cancels an unconfirmed recording. Task replies respect clear and rewind boundaries.
+UP/DOWN selects a task in the status list; OK opens its details. In details, UP/DOWN pages through Cindy's latest visible reply and OK starts recording. Another OK stops for transcription; 30 seconds stops automatically. The device then previews the transcript: UP discards it and records again, DOWN cycles review pages, and OK confirms sending it to the original task. Holding OK returns to the task home and cancels an unconfirmed recording without stopping Bluetooth. A confirmation already being sent must finish before returning home. Task replies respect clear and rewind boundaries.
 
 Wi-Fi recording keeps its separate sender worker and eight-block PCM queue. BLE recording runs Opus on the page worker's fixed 28 KB stack and keeps the 512-byte capture block out of that stack. The LVGL pool is 32 KB. Device controls and paged text reuse the existing bounded BLE transport; full replies and transcripts stay on the Mac. Each indication waits at most 1.5 seconds for acknowledgement. A write or acknowledgement error cancels the recording.
 
@@ -45,10 +45,16 @@ NVS partition at `0x9000`, with `0xFF`.
 
 ## Legacy Wi-Fi mode
 
-**Cindy Tasks** remains a separate, explicitly selected LAN mode using the ignored `main/app_config.h` and `python3 bridge/server.py --port 8787`. Tasks come from a file; HTTP chunked PCM is archived as WAV. It does not supply live Cindy events or transcription. BLE never switches to this path. Local configured firmware may contain credentials and must not be uploaded publicly.
+The source retains a legacy LAN entry point for development; it is not exposed in the Cindy application. This mode uses the ignored `main/app_config.h` and `python3 bridge/server.py --port 8787`. Tasks come from a file; HTTP chunked PCM is archived as WAV. It does not supply live Cindy events or transcription. BLE never switches to this path. Local configured firmware may contain credentials and must not be uploaded publicly.
 
 ## Build and acceptance
 
 Activate ESP-IDF 5.5.3 and run `./tools/validate.sh`. The verified merged image is `build/FoloToy-AI-Passport-full.bin`. Keep 8 MB Flash, the 3 MB app limit and protected `cardid` at `0x356000`. A merged image verified to end before `cardid` can be written at `0x0` without whole-chip erase.
 
 Report Build, Host tests, Device tests and Unverified separately. Host checks cover UTF-8/model logic, bounded recording queue behavior and cleanup; Mac checks cover protocol bounds, task history and Ogg framing. Hardware acceptance still requires CJK screen inspection, BLE recording/ASR continuity, repeated recordings/heap stability, permission prompts, reconnect and page exit. A successful build does not establish those results.
+
+## Application design
+
+The boot screen is the Cindy task home, with the existing pixel sky, grass and mascot. Empty states distinguish connection setup, an empty synchronized task list and a paused heartbeat. The footer shows task position and contextual controls rather than transport internals. Hardware initialization errors stop startup with an explicit error screen; no alternate transport or demo menu is selected.
+
+The official `demo/claude-buddy-port` informs direct application boot and persistent connection context; `demo/stopwatch` and `demo/cat-themed-pomodoro-timer` inform pure host-tested navigation and monotonic timing. `demo/tetris-game` informs queued input and change-driven list updates. Existing procedural art avoids the full-screen RGB565 cost demonstrated in `demo/rock-paper-scissors`.

@@ -1,7 +1,7 @@
 // main/demo_tasks.c —— Cindy 任务面板：列表 / 详情 / 录音三视图 + 轮询与录音工作任务。
 //
 // 按键：列表上下选择；详情上下阅读、确认录音；转写后上重录、下阅读、确认发送。
-// OK 长按由 main.c 统一返回菜单，录音中返回即放弃本次录音。
+// Holding OK returns home and cancels an unconfirmed recording without stopping BLE.
 // 16kHz/16bit/mono PCM streams through a bounded queue to the bridge (maximum 30s).
 // Task text uses a Flash-resident Noto CJK bitmap font.
 #include "demo.h"
@@ -39,7 +39,7 @@ LV_FONT_DECLARE(passport_font_14);
 #define TASKS_WORKER_STACK_BYTES 28672
 
 typedef enum { VIEW_LIST = 0, VIEW_DETAIL, VIEW_RECORD } view_t;
-typedef enum { CMD_NONE = 0, CMD_RECORD, CMD_STOP_SEND, CMD_DETAIL, CMD_PREVIOUS, CMD_NEXT, CMD_RETRY, CMD_CONFIRM } cmd_t;
+typedef enum { CMD_NONE = 0, CMD_RECORD, CMD_STOP_SEND, CMD_DETAIL, CMD_PREVIOUS, CMD_NEXT, CMD_RETRY, CMD_CONFIRM, CMD_CANCEL } cmd_t;
 
 static const char *TAG = "demo_tasks";
 
@@ -47,6 +47,7 @@ static atomic_bool s_worker_running;
 static atomic_bool s_exit;
 static _Atomic(cmd_t) s_cmd;
 static atomic_bool s_recording;
+static atomic_bool s_cancel_record;
 static atomic_bool s_waiting_review, s_waiting_send;
 static uint32_t s_voice_token, s_action_token;
 static char s_action_task[TASK_ID_LEN];
@@ -62,6 +63,8 @@ static lv_obj_t *s_scr;
 static lv_obj_t *s_line_label;
 static lv_obj_t *s_battery_label;
 static lv_obj_t *s_nav_label;
+static lv_obj_t *s_context_label, *s_empty_label;
+static bool s_sync_stale;
 static lv_obj_t *s_box_list, *s_box_detail, *s_box_record;
 static lv_obj_t *s_cards[TASKS_MODEL_MAX];
 static lv_obj_t *s_rec_sec, *s_rec_bar, *s_rec_hint;
@@ -117,7 +120,8 @@ static void view_show(view_t v) {
     lv_obj_t *target = v == VIEW_LIST ? s_box_list
                      : v == VIEW_DETAIL ? s_box_detail : s_box_record;
     lv_obj_remove_flag(target, LV_OBJ_FLAG_HIDDEN);
-    lv_label_set_text(s_nav_label, v == VIEW_LIST ? "上下选择  确认进入"
+    if (s_context_label) lv_label_set_text(s_context_label, v == VIEW_LIST ? "你的桌面 AI 伙伴" : "长按确认返回首页");
+    lv_label_set_text(s_nav_label, v == VIEW_LIST ? (s_model.count ? "上下选择  确认进入" : "在电脑端连接 Cindy")
                      : v == VIEW_DETAIL ? "上下阅读  确认录音" : "长按确认取消并返回");
 }
 
@@ -131,15 +135,17 @@ static void list_highlight(void) {
 }
 
 static void list_rebuild(void) {
+    s_empty_label = NULL;
     lv_obj_clean(s_box_list);
     for (int i = 0; i < TASKS_MODEL_MAX; i++) s_cards[i] = NULL;
 
     if (s_model.count == 0) {
-        lv_obj_t *empty = ui_pixel_label(s_box_list, s_ble_mode ? "No tasks yet\nWaiting for Cindy" : "No tasks yet\nWaiting for bridge",
-                                         &passport_font_14, 0x5A6B7A);
-        lv_obj_set_style_text_align(empty, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_align(empty, LV_ALIGN_TOP_MID, 0, 110);
-        ui_pixel_mascot_create(s_box_list, 101, 44);
+        lv_obj_t *panel = ui_pixel_panel_create(s_box_list, 12, 6, 216, 182, UI_PAPER);
+        ui_pixel_mascot_create(panel, 83, 12);
+        s_empty_label = ui_pixel_label(panel, "", &passport_font_14, UI_INK);
+        lv_obj_set_width(s_empty_label, 190);
+        lv_obj_set_style_text_align(s_empty_label, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(s_empty_label, LV_ALIGN_TOP_MID, 0, 70);
         return;
     }
     for (int i = 0; i < s_model.count; i++) {
@@ -240,6 +246,16 @@ static void record_show(void) {
 
 static void status_refresh(void) {
     if (s_line_label) lv_label_set_text(s_line_label, s_line);
+    if (s_context_label) {
+        if (s_view == VIEW_LIST && s_model.count)
+            lv_label_set_text_fmt(s_context_label, "任务 %d / %d", s_model.selected + 1, s_model.count);
+        else lv_label_set_text(s_context_label, s_view == VIEW_LIST ? "你的桌面 AI 伙伴" : "长按确认返回首页");
+    }
+    if (s_empty_label) lv_label_set_text(s_empty_label,
+        !s_ble_mode ? "等待任务\n请连接 bridge" :
+        tasks_home_hint(passport_ble_connected(), s_sync_stale));
+    if (s_view == VIEW_LIST) lv_label_set_text(s_nav_label,
+        s_model.count ? "上下选择  确认进入" : "等待 Cindy 同步任务");
 }
 
 static void do_poll(void) {
@@ -373,7 +389,7 @@ static void do_record(void) {
     // headroom; the Wi-Fi path still copies the block into its queue.
     static record_chunk_t chunk;
     chunk.bytes = sizeof(chunk.pcm);
-    while (!s_exit && s_cmd == CMD_RECORD && fill < REC_MAX_BYTES) {
+    while (!s_exit && !s_cancel_record && s_cmd == CMD_RECORD && fill < REC_MAX_BYTES) {
         if (upload.error != ESP_OK) { err = upload.error; break; }
         chunk.bytes = REC_MAX_BYTES - fill < sizeof(chunk.pcm) ? REC_MAX_BYTES - fill : sizeof(chunk.pcm);
         err = bsp_audio_read(chunk.pcm, chunk.bytes);
@@ -407,7 +423,7 @@ static void do_record(void) {
             bsp_lvgl_unlock();
         }
     }
-    bool submit = err == ESP_OK && !s_exit && fill &&
+    bool submit = err == ESP_OK && !s_exit && !s_cancel_record && fill &&
                   (s_cmd == CMD_STOP_SEND || fill == REC_MAX_BYTES);
     if (inline_voice) {
         if (submit) {
@@ -418,7 +434,8 @@ static void do_record(void) {
             else s_waiting_review = true;
         }
         upload.abort = !submit;
-        passport_voice_close(upload.voice, upload.abort || upload.error != ESP_OK || s_exit);
+        passport_voice_close(upload.voice, upload.abort || upload.error != ESP_OK || s_exit || s_cancel_record);
+        if (s_cancel_record) s_waiting_review = false;
         upload.voice = NULL;
     } else if (submit) {
         if (bsp_lvgl_lock(100)) { lv_label_set_text(s_rec_hint, "Sending..."); bsp_lvgl_unlock(); }
@@ -458,7 +475,9 @@ cleanup:
             snprintf(s_line, sizeof(s_line), "ESP_ERR_TIMEOUT\n%uB / %ums",
                      (unsigned)upload.sent_bytes, (unsigned)upload.max_write_ms);
         }
-        detail_show();
+        if (s_cancel_record) view_show(VIEW_LIST);
+        else detail_show();
+        s_cancel_record = false;
         status_refresh();
         bsp_lvgl_unlock();
     }
@@ -502,8 +521,9 @@ static void worker_task(void *arg) {
             if (stale) { count = 0; changed = true; }
             int battery = bsp_battery_soc();
             if (bsp_lvgl_lock(200)) {
+                s_sync_stale = stale;
                 passport_ble_status(s_line, sizeof(s_line));
-                if (stale) snprintf(s_line, sizeof(s_line), "Cindy sync paused");
+                if (stale) snprintf(s_line, sizeof(s_line), "同步暂停，请检查 Cindy");
                 if (werr != ESP_OK) snprintf(s_line, sizeof(s_line), "BLE start: %s", esp_err_to_name(werr));
                 if (s_action_error != ESP_OK) snprintf(s_line, sizeof(s_line), "操作失败: %s", esp_err_to_name(s_action_error));
                 if (!passport_ble_connected()) { s_waiting_review = false; s_waiting_send = false; }
@@ -563,6 +583,8 @@ static void tasks_enter(bool ble) {
     s_exit = false;
     s_cmd = CMD_NONE;
     s_recording = false;
+    s_cancel_record = false;
+    s_sync_stale = false;
     s_waiting_review = false; s_waiting_send = false;
     s_voice_token = 0; s_action_task[0] = 0; s_action_error = ESP_OK;
     s_view = VIEW_LIST;
@@ -577,8 +599,8 @@ static void tasks_enter(bool ble) {
     s_battery_label = ui_pixel_label(s_scr, "--%", &passport_font_14, UI_INK);
     lv_obj_align(s_battery_label, LV_ALIGN_TOP_RIGHT, -8, 25);
 
-    lv_obj_t *source = ui_pixel_label(s_scr, s_ble_mode ? "Source: Cindy / BLE" : "Source: bridge file", &passport_font_14, UI_INK);
-    lv_obj_align(source, LV_ALIGN_TOP_LEFT, 8, 282);
+    s_context_label = ui_pixel_label(s_scr, "你的桌面 AI 伙伴", &passport_font_14, UI_INK);
+    lv_obj_align(s_context_label, LV_ALIGN_TOP_LEFT, 8, 282);
     s_nav_label = ui_pixel_label(s_scr, "上下选择  确认进入", &passport_font_14, UI_INK);
     lv_obj_align(s_nav_label, LV_ALIGN_TOP_LEFT, 8, 299);
 
@@ -591,6 +613,7 @@ static void tasks_enter(bool ble) {
     lv_obj_add_flag(s_box_record, LV_OBJ_FLAG_HIDDEN);
 
     list_rebuild();
+    status_refresh();
 
     s_worker_running = true;
     // Opus encoding runs inline on BLE recordings. Keep one larger worker stack
@@ -617,6 +640,7 @@ void demo_tasks_exit(void) {
     s_line_label = NULL;
     s_battery_label = NULL;
     s_nav_label = NULL;
+    s_context_label = s_empty_label = NULL;
     s_box_list = s_box_detail = s_box_record = NULL;
     s_rec_sec = s_rec_bar = s_rec_hint = NULL;
     for (int i = 0; i < TASKS_MODEL_MAX; i++) s_cards[i] = NULL;
@@ -624,6 +648,22 @@ void demo_tasks_exit(void) {
 
 void demo_tasks_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
     // The application input dispatcher already holds the LVGL lock.
+    if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
+        task_home_action_t action = tasks_home_action(
+            s_cmd == CMD_RECORD || s_cmd == CMD_STOP_SEND || s_recording,
+            s_cmd != CMD_NONE, s_waiting_send);
+        if (action == TASK_HOME_CANCEL_RECORDING) {
+            s_cancel_record = true;
+            lv_label_set_text(s_nav_label, "正在取消录音...");
+        } else if (action == TASK_HOME_RETURN) {
+            if (s_ble_mode && s_view == VIEW_DETAIL && s_action_task[0])
+                queue_action(CMD_CANCEL);
+            s_waiting_review = false;
+            view_show(VIEW_LIST);
+            status_refresh();
+        }
+        return;
+    }
     if (ev == BSP_BTN_CLICK && btn == BSP_BTN_OK && s_cmd == CMD_RECORD) {
         s_cmd = CMD_STOP_SEND;
         return;
@@ -641,7 +681,7 @@ void demo_tasks_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
             case TASK_READ_NEXT: queue_action(CMD_NEXT); break;
             case TASK_RECORD_AGAIN: queue_action(CMD_RETRY); break;
             case TASK_SEND: queue_action(CMD_CONFIRM); break;
-            case TASK_RECORD: s_cmd = CMD_RECORD; break;
+            case TASK_RECORD: s_cancel_record = false; s_cmd = CMD_RECORD; break;
             case TASK_BUSY: break;
             }
             return;
@@ -651,6 +691,7 @@ void demo_tasks_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
             if (s_view == VIEW_LIST) {
                 tasks_model_move(&s_model, delta);
                 list_highlight();
+                status_refresh();
             } else if (s_view == VIEW_DETAIL) {
                 tasks_model_move(&s_model, delta);
                 detail_show();
