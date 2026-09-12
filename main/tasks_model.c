@@ -108,3 +108,15 @@ int tasks_model_preview(const char *message, char *out, size_t cap) {
     out[n] = 0;
     return (int)n;
 }
+
+task_home_action_t tasks_home_action(bool recording, bool command_pending, bool sending) {
+    if (recording) return TASK_HOME_CANCEL_RECORDING;
+    if (command_pending || sending) return TASK_HOME_STAY;
+    return TASK_HOME_RETURN;
+}
+
+const char *tasks_home_hint(bool connected, bool stale) {
+    if (!connected) return "连接电脑端 Cindy\n设置 > 快捷键 > 配件\n启用 Cindy Passport";
+    if (stale) return "同步已暂停\n请检查电脑端 Cindy";
+    return "已连接 Cindy\n新任务会自动出现在这里";
+}

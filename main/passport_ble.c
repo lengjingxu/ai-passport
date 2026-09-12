@@ -251,9 +251,9 @@ bool passport_ble_snapshot(task_item_t *items, int *count)
 void passport_ble_status(char *out, size_t cap)
 {
     int pin = passkey, err = failure;
-    if (pin >= 0) snprintf(out, cap, "Pair code: %06d", pin);
+    if (pin >= 0) snprintf(out, cap, "配对码: %06d", pin);
     else if (err) snprintf(out, cap, "BLE error: %d", err);
-    else snprintf(out, cap, "%s", secure ? "Cindy connected" : connection != BLE_HS_CONN_HANDLE_NONE ? "Pair on your Mac" : "Connect from Cindy");
+    else snprintf(out, cap, "%s", secure ? "Cindy 已连接" : connection != BLE_HS_CONN_HANDLE_NONE ? "请在 Mac 上完成配对" : "等待连接 Cindy");
 }
 esp_err_t passport_ble_open_task(const char *id)
 {

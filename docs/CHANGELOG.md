@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Boot directly into Cindy with connection guidance, live task position and persistent BLE navigation; holding OK cancels an unconfirmed recording and returns home. Remove hardware test entries from the application build.
+
 - Show task status, paged Cindy replies and transcription review on Passport; UP re-records, DOWN reads, and OK confirms sending to the original task through Cindy’s selected voice-input service.
 
 - Reduce the LVGL pool to 32 KB after measuring the Chinese task and recording pages, leaving contiguous heap for Opus initialization on ESP32-C3.

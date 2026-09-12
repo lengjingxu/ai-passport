@@ -5,6 +5,14 @@
 
 int main(void)
 {
+    assert(tasks_home_action(true, true, false) == TASK_HOME_CANCEL_RECORDING);
+    assert(tasks_home_action(false, true, false) == TASK_HOME_STAY);
+    assert(tasks_home_action(false, false, true) == TASK_HOME_STAY);
+    assert(tasks_home_action(false, false, false) == TASK_HOME_RETURN);
+    assert(strstr(tasks_home_hint(false, true), "Cindy Passport"));
+    assert(strstr(tasks_home_hint(true, true), "同步已暂停"));
+    assert(strstr(tasks_home_hint(true, false), "新任务"));
+
     uint32_t token;
     assert(tasks_review_token("draft:12345678", &token) && token == 0x12345678);
     assert(tasks_review_token("retry:89abcdef", &token) && token == 0x89abcdef);
