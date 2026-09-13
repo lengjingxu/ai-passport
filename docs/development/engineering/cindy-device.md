@@ -58,3 +58,5 @@ Report Build, Host tests, Device tests and Unverified separately. Host checks co
 The boot screen is the Cindy task home, with the existing pixel sky, grass and mascot. Empty states distinguish connection setup, an empty synchronized task list and a paused heartbeat. The footer shows task position and contextual controls rather than transport internals. Hardware initialization errors stop startup with an explicit error screen; no alternate transport or demo menu is selected.
 
 The official `demo/claude-buddy-port` informs direct application boot and persistent connection context; `demo/stopwatch` and `demo/cat-themed-pomodoro-timer` inform pure host-tested navigation and monotonic timing. `demo/tetris-game` informs queued input and change-driven list updates. Existing procedural art avoids the full-screen RGB565 cost demonstrated in `demo/rock-paper-scissors`.
+
+Task cards reserve two 27-pixel font lines for names, with separate single-line status and preview rows. Longer titles end in an ellipsis. Detail titles use a single scrolling line; recording titles use a bounded single line. The larger cards remain vertically scrollable.

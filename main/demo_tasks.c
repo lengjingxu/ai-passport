@@ -150,25 +150,27 @@ static void list_rebuild(void) {
     }
     for (int i = 0; i < s_model.count; i++) {
         const task_item_t *it = &s_model.items[i];
-        lv_obj_t *card = ui_pixel_panel_create(s_box_list, 12, 6 + i * 88, 216, 80, UI_PAPER);
+        lv_obj_t *card = ui_pixel_panel_create(s_box_list, 12, 6 + i * 146, 216, 138, UI_PAPER);
 
         lv_obj_t *title = ui_pixel_label(card, it->title, &passport_font_14, UI_INK);
-        lv_obj_set_width(title, 194);
+        // The CJK font line box is 27 px; reserve two lines before status.
+        lv_obj_set_size(title, 194, 54);
+        lv_obj_set_style_text_line_space(title, 0, 0);
         lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
         lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
 
         lv_obj_t *badge = ui_pixel_label(card, status_text(it->status),
                                          &passport_font_14, CHIP_COLORS[tasks_model_chip(it->status)]);
-        lv_obj_set_width(badge, 194);
+        lv_obj_set_size(badge, 194, 27);
         lv_label_set_long_mode(badge, LV_LABEL_LONG_DOT);
-        lv_obj_align(badge, LV_ALIGN_TOP_LEFT, 0, 20);
+        lv_obj_align(badge, LV_ALIGN_TOP_LEFT, 0, 56);
 
         char prev[64];
         tasks_model_preview(it->message, prev, sizeof(prev));
         lv_obj_t *msg = ui_pixel_label(card, prev, &passport_font_14, 0x5A6B7A);
-        lv_obj_set_width(msg, 194);
+        lv_obj_set_size(msg, 194, 27);
         lv_label_set_long_mode(msg, LV_LABEL_LONG_DOT);
-        lv_obj_align(msg, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+        lv_obj_align(msg, LV_ALIGN_TOP_LEFT, 0, 85);
 
         s_cards[i] = card;
     }
@@ -183,15 +185,15 @@ static void detail_show(void) {
     lv_obj_t *panel = ui_pixel_panel_create(s_box_detail, 12, 6, 216, 182, UI_PAPER);
 
     lv_obj_t *title = ui_pixel_label(panel, it->title, &passport_font_14, UI_INK);
-    lv_obj_set_width(title, 190);
-    lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
+    lv_obj_set_size(title, 190, 27);
+    lv_label_set_long_mode(title, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
 
     lv_obj_t *status = ui_pixel_label(panel, status_text(it->status),
                                       &passport_font_14, CHIP_COLORS[tasks_model_chip(it->status)]);
-    lv_obj_set_width(status, 190);
+    lv_obj_set_size(status, 190, 27);
     lv_label_set_long_mode(status, LV_LABEL_LONG_DOT);
-    lv_obj_align(status, LV_ALIGN_TOP_LEFT, 0, 23);
+    lv_obj_align(status, LV_ALIGN_TOP_LEFT, 0, 29);
 
     uint32_t token;
     bool review = tasks_review_token(it->status, &token);
@@ -199,9 +201,11 @@ static void detail_show(void) {
     const char *text = s_waiting_send ? "正在发送到原任务" : stale || s_waiting_review ? "正在等待 Cindy 转写" : it->message;
     lv_obj_t *msg = ui_pixel_label(panel, text, &passport_font_14, 0x3A4A5A);
     lv_obj_set_width(msg, 190);
-    lv_obj_set_height(msg, 108);
+    lv_obj_set_height(msg, 102);
+    // Four reply rows: 4 * 27 - 3 * 2 = 102 px.
+    lv_obj_set_style_text_line_space(msg, -2, 0);
     lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
-    lv_obj_align(msg, LV_ALIGN_TOP_LEFT, 0, 48);
+    lv_obj_align(msg, LV_ALIGN_TOP_LEFT, 0, 58);
 
     view_show(VIEW_DETAIL);
     if (s_waiting_send || s_waiting_review || stale || tasks_detail_action(it->status, 0, s_voice_token) == TASK_BUSY)
@@ -226,13 +230,13 @@ static void record_show(void) {
     lv_obj_t *panel = ui_pixel_panel_create(s_box_record, 12, 6, 216, 182, UI_PAPER);
     const task_item_t *it = tasks_model_current(&s_model);
     lv_obj_t *title = ui_pixel_label(panel, it ? it->title : "", &passport_font_14, UI_INK);
-    lv_obj_set_width(title, 194);
+    lv_obj_set_size(title, 194, 27);
     lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
     lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
     lv_obj_t *label = ui_pixel_label(panel, "语音回复", &passport_font_14, UI_RED);
-    lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 25);
+    lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 29);
     s_rec_sec = ui_pixel_label(panel, "0s / 30s", &lv_font_montserrat_20, UI_INK);
-    lv_obj_align(s_rec_sec, LV_ALIGN_TOP_MID, 0, 53);
+    lv_obj_align(s_rec_sec, LV_ALIGN_TOP_MID, 0, 59);
     s_rec_bar = lv_bar_create(panel);
     lv_obj_set_size(s_rec_bar, 190, 14);
     lv_obj_align(s_rec_bar, LV_ALIGN_TOP_MID, 0, 91);

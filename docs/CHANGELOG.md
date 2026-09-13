@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- Reserve two font-height lines for task card titles and separate status and preview rows. Bound detail and recording titles so long names cannot overlap adjacent labels.
+
 - Boot directly into Cindy with connection guidance, live task position and persistent BLE navigation; holding OK cancels an unconfirmed recording and returns home. Remove hardware test entries from the application build.
 
 - Show task status, paged Cindy replies and transcription review on Passport; UP re-records, DOWN reads, and OK confirms sending to the original task through Cindy’s selected voice-input service.
