@@ -3,8 +3,25 @@
 
 #include "tasks_model.h"
 
+static int title_test_width(const char *text) {
+    int width = 0;
+    for (size_t i = 0; text[i]; ++i)
+        if (((unsigned char)text[i] & 0xc0) != 0x80) width += 10;
+    return width;
+}
+
 int main(void)
 {
+    char first[TASK_TITLE_LEN], second[TASK_TITLE_LEN];
+    tasks_title_rows("中文标题任务", 40, title_test_width, first, second);
+    assert(!strcmp(first, "中文标题") && !strcmp(second, "任务"));
+    tasks_title_rows("ABCD", 40, title_test_width, first, second);
+    assert(!strcmp(first, "ABCD") && !strcmp(second, ""));
+    tasks_title_rows("A\nB", 20, title_test_width, first, second);
+    assert(!strcmp(first, "A ") && !strcmp(second, "B"));
+    tasks_title_rows("", 40, title_test_width, first, second);
+    assert(!first[0] && !second[0]);
+
     assert(tasks_home_action(true, true, false) == TASK_HOME_CANCEL_RECORDING);
     assert(tasks_home_action(false, true, false) == TASK_HOME_STAY);
     assert(tasks_home_action(false, false, true) == TASK_HOME_STAY);

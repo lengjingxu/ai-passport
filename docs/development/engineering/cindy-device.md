@@ -59,4 +59,4 @@ The boot screen is the Cindy task home, with the existing pixel sky, grass and m
 
 The official `demo/claude-buddy-port` informs direct application boot and persistent connection context; `demo/stopwatch` and `demo/cat-themed-pomodoro-timer` inform pure host-tested navigation and monotonic timing. `demo/tetris-game` informs queued input and change-driven list updates. Existing procedural art avoids the full-screen RGB565 cost demonstrated in `demo/rock-paper-scissors`.
 
-Task cards reserve two 27-pixel font lines for names, with separate single-line status and preview rows. Longer titles end in an ellipsis. Detail titles use a single scrolling line; recording titles use a bounded single line. The larger cards remain vertically scrollable.
+Task cards show two 27-pixel title rows without a message preview. The first row spans the card; the second reserves space on the right for status. Titles are split at UTF-8 character boundaries using measured font widths; overflowing second rows end in an ellipsis. Detail titles use a single scrolling line; recording titles use a bounded single line. The task list remains vertically scrollable.

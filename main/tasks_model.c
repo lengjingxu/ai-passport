@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include "tasks_model.h"
 
 #include <string.h>
@@ -119,4 +120,22 @@ const char *tasks_home_hint(bool connected, bool stale) {
     if (!connected) return "连接电脑端 Cindy\n设置 > 快捷键 > 配件\n启用 Cindy Passport";
     if (stale) return "同步已暂停\n请检查电脑端 Cindy";
     return "已连接 Cindy\n新任务会自动出现在这里";
+}
+
+void tasks_title_rows(const char *title, int width, int (*measure)(const char *),
+                      char *first, char *second) {
+    char clean[TASK_TITLE_LEN];
+    snprintf(clean, sizeof(clean), "%s", title);
+    for (size_t i = 0; clean[i]; ++i)
+        if (clean[i] == '\n' || clean[i] == '\r') clean[i] = ' ';
+    size_t used = 0;
+    first[0] = 0;
+    while (clean[used]) {
+        size_t end = used + 1;
+        while (clean[end] && ((unsigned char)clean[end] & 0xc0) == 0x80) ++end;
+        memcpy(first, clean, end); first[end] = 0;
+        if (measure(first) > width) { first[used] = 0; break; }
+        used = end;
+    }
+    snprintf(second, TASK_TITLE_LEN, "%s", clean + used);
 }
