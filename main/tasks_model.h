@@ -57,3 +57,8 @@ int tasks_model_preview(const char *message, char *out, size_t cap);
 typedef enum { TASK_HOME_STAY, TASK_HOME_CANCEL_RECORDING, TASK_HOME_RETURN } task_home_action_t;
 task_home_action_t tasks_home_action(bool recording, bool command_pending, bool sending);
 const char *tasks_home_hint(bool connected, bool stale);
+
+// Split a bounded UTF-8 title after the last character fitting the first row.
+// The renderer measures prefixes using its actual font. Outputs are TASK_TITLE_LEN.
+void tasks_title_rows(const char *title, int width, int (*measure)(const char *),
+                      char *first, char *second);

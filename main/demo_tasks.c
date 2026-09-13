@@ -134,6 +134,12 @@ static void list_highlight(void) {
     }
 }
 
+static int title_width(const char *text) {
+    lv_point_t size;
+    lv_text_get_size(&size, text, &passport_font_14, 0, 0, 10000, LV_TEXT_FLAG_EXPAND);
+    return size.x;
+}
+
 static void list_rebuild(void) {
     s_empty_label = NULL;
     lv_obj_clean(s_box_list);
@@ -150,27 +156,30 @@ static void list_rebuild(void) {
     }
     for (int i = 0; i < s_model.count; i++) {
         const task_item_t *it = &s_model.items[i];
-        lv_obj_t *card = ui_pixel_panel_create(s_box_list, 12, 6 + i * 146, 216, 138, UI_PAPER);
+        lv_obj_t *card = ui_pixel_panel_create(s_box_list, 12, 6 + i * 88, 216, 80, UI_PAPER);
+        char first[TASK_TITLE_LEN], second[TASK_TITLE_LEN];
+        tasks_title_rows(it->title, 194, title_width, first, second);
+        const char *state = status_text(it->status);
+        int status_width = title_width(state);
+        if (status_width < 56) status_width = 56;
+        if (status_width > 112) status_width = 112;
 
-        lv_obj_t *title = ui_pixel_label(card, it->title, &passport_font_14, UI_INK);
-        // The CJK font line box is 27 px; reserve two lines before status.
-        lv_obj_set_size(title, 194, 54);
-        lv_obj_set_style_text_line_space(title, 0, 0);
-        lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
+        lv_obj_t *title = ui_pixel_label(card, first, &passport_font_14, UI_INK);
+        lv_obj_set_size(title, 194, 27);
+        lv_label_set_long_mode(title, LV_LABEL_LONG_CLIP);
         lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
 
-        lv_obj_t *badge = ui_pixel_label(card, status_text(it->status),
-                                         &passport_font_14, CHIP_COLORS[tasks_model_chip(it->status)]);
-        lv_obj_set_size(badge, 194, 27);
-        lv_label_set_long_mode(badge, LV_LABEL_LONG_DOT);
-        lv_obj_align(badge, LV_ALIGN_TOP_LEFT, 0, 56);
+        lv_obj_t *continuation = ui_pixel_label(card, second, &passport_font_14, UI_INK);
+        lv_obj_set_size(continuation, 194 - status_width - 8, 27);
+        lv_label_set_long_mode(continuation, LV_LABEL_LONG_DOT);
+        lv_obj_align(continuation, LV_ALIGN_TOP_LEFT, 0, 29);
 
-        char prev[64];
-        tasks_model_preview(it->message, prev, sizeof(prev));
-        lv_obj_t *msg = ui_pixel_label(card, prev, &passport_font_14, 0x5A6B7A);
-        lv_obj_set_size(msg, 194, 27);
-        lv_label_set_long_mode(msg, LV_LABEL_LONG_DOT);
-        lv_obj_align(msg, LV_ALIGN_TOP_LEFT, 0, 85);
+        lv_obj_t *badge = ui_pixel_label(card, state, &passport_font_14,
+                                         CHIP_COLORS[tasks_model_chip(it->status)]);
+        lv_obj_set_size(badge, status_width, 27);
+        lv_label_set_long_mode(badge, LV_LABEL_LONG_DOT);
+        lv_obj_set_style_text_align(badge, LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_align(badge, LV_ALIGN_TOP_RIGHT, 0, 29);
 
         s_cards[i] = card;
     }
